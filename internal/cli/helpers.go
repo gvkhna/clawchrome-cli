@@ -2,8 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/gvkhna/clawchrome-cli/internal/snapshot"
@@ -411,10 +409,21 @@ func ParsePagesList(text string) []PageInfo {
 }
 
 func parsePagesList(text string) []pageInfo {
-	exported := ParsePagesList(text)
-	pages := make([]pageInfo, 0, len(exported))
-	for _, page := range exported {
-		pages = append(pages, pageInfo{id: page.ID, url: page.URL, selected: page.Selected})
+	pages := make([]pageInfo, 0)
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		var (
+			id       int
+			url      string
+			selected string
+		)
+		if _, err := fmt.Sscanf(line, "%d: %s %s", &id, &url, &selected); err == nil {
+			pages = append(pages, pageInfo{id: id, url: url, selected: selected == "[selected]"})
+			continue
+		}
+		if _, err := fmt.Sscanf(line, "%d: %s", &id, &url); err == nil {
+			pages = append(pages, pageInfo{id: id, url: url})
+		}
 	}
 	return pages
 }

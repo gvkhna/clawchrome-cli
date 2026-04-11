@@ -1,5 +1,6 @@
 [tools]
 go = "1.26.0"
+goreleaser = "2.15.2"
 
 [settings]
 unix_default_inline_shell_args = "bash -euo pipefail -c"
@@ -42,3 +43,11 @@ run = [
   { task = "test" },
   { task = "build" },
 ]
+
+[tasks."release:check"]
+description = "Validate goreleaser configuration"
+run = "goreleaser check"
+
+[tasks."release:snapshot"]
+description = "Build snapshot release artifacts locally"
+run = "goreleaser release --snapshot --clean --skip=publish"

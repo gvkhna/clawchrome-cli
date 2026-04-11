@@ -24,6 +24,23 @@ mise run build
 
 The main binary is built to `./.bin/clawchrome-cli`.
 
+## Releases
+
+This repo is configured for GoReleaser-based releases.
+
+Local validation:
+
+```sh
+mise run release:check
+mise run release:snapshot
+```
+
+GitHub releases:
+
+- pushing a `v*` tag runs `.github/workflows/release.yml`
+- GoReleaser publishes release archives for Linux, Windows, and macOS
+- macOS artifacts include a `darwin_universal` binary built from `amd64` and `arm64`
+
 ## Notes
 
 This is the Go implementation scaffold and initial translation target for `chrome-devtools-axi`.
