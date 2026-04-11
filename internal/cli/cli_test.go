@@ -207,11 +207,11 @@ func TestMainWaitValidationAndDispatch(t *testing.T) {
 
 	t.Run("numeric target uses evaluate_script", func(t *testing.T) {
 		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
-			if name != "evaluate_script" {
+			if name != "wait_duration" {
 				t.Fatalf("unexpected tool %q with args %#v", name, args)
 			}
-			if !strings.Contains(args["function"].(string), "setTimeout") {
-				t.Fatalf("unexpected function: %#v", args)
+			if args["milliseconds"] != 2000 {
+				t.Fatalf("unexpected wait_duration args: %#v", args)
 			}
 			return "", nil
 		})

@@ -38,6 +38,43 @@ type toolListResult struct {
 	} `json:"tools"`
 }
 
+type internalTool struct {
+	Name        string
+	Description string
+	InputSchema map[string]any
+}
+
+var internalTools = []internalTool{
+	{
+		Name:        "scroll_page",
+		Description: "Scroll the current page in a direction using native key actions.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"direction": map[string]any{
+					"type": "string",
+					"enum": []string{"up", "down", "top", "bottom"},
+				},
+			},
+			"required": []string{"direction"},
+		},
+	},
+	{
+		Name:        "wait_duration",
+		Description: "Wait for a number of milliseconds without using page JavaScript.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"milliseconds": map[string]any{
+					"type":    "integer",
+					"minimum": 0,
+				},
+			},
+			"required": []string{"milliseconds"},
+		},
+	},
+}
+
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -132,7 +169,22 @@ func Run(ctx context.Context) error {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, result.Tools)
+		tools := make([]map[string]any, 0, len(result.Tools)+len(internalTools))
+		for _, tool := range result.Tools {
+			tools = append(tools, map[string]any{
+				"name":        tool.Name,
+				"description": tool.Description,
+				"inputSchema": tool.InputSchema,
+			})
+		}
+		for _, tool := range internalTools {
+			tools = append(tools, map[string]any{
+				"name":        tool.Name,
+				"description": tool.Description,
+				"inputSchema": tool.InputSchema,
+			})
+		}
+		writeJSON(w, http.StatusOK, tools)
 	})
 	mux.HandleFunc("/call", func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -145,7 +197,7 @@ func Run(ctx context.Context) error {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
-		text, err := client.CallTool(name, args)
+		text, err := callTool(client, name, args)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -181,6 +233,72 @@ func Run(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func callTool(client *mcpClient, name string, args map[string]any) (string, error) {
+	switch name {
+	case "scroll_page":
+		return callScrollPage(client, args)
+	case "wait_duration":
+		return callWaitDuration(args)
+	default:
+		return client.CallTool(name, args)
+	}
+}
+
+func callScrollPage(client *mcpClient, args map[string]any) (string, error) {
+	direction, _ := args["direction"].(string)
+	key, ok := map[string]string{
+		"up":     "PageUp",
+		"down":   "PageDown",
+		"top":    "Home",
+		"bottom": "End",
+	}[direction]
+	if !ok {
+		return "", fmt.Errorf("invalid scroll_page direction %q", direction)
+	}
+	if _, err := client.CallTool("press_key", map[string]any{"key": key}); err != nil {
+		return "", err
+	}
+	return "", nil
+}
+
+func callWaitDuration(args map[string]any) (string, error) {
+	value, ok := args["milliseconds"]
+	if !ok {
+		return "", errors.New("missing milliseconds")
+	}
+
+	ms, ok := toInt(value)
+	if !ok || ms < 0 {
+		return "", fmt.Errorf("invalid milliseconds value %v", value)
+	}
+	time.Sleep(time.Duration(ms) * time.Millisecond)
+	return "", nil
+}
+
+func toInt(value any) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case float64:
+		if v != float64(int(v)) {
+			return 0, false
+		}
+		return int(v), true
+	case json.Number:
+		parsed, err := v.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(parsed), true
+	default:
+		return 0, false
+	}
 }
 
 func startMCPClient() (*mcpClient, error) {

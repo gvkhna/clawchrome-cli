@@ -265,18 +265,13 @@ func handleScroll(args []string, full bool) (string, error) {
 		dir = "down"
 	}
 
-	fn, ok := map[string]string{
-		"up":     "window.scrollBy(0, -500)",
-		"down":   "window.scrollBy(0, 500)",
-		"top":    "window.scrollTo(0, 0)",
-		"bottom": "window.scrollTo(0, document.body.scrollHeight)",
-	}[dir]
-	if !ok {
+	switch dir {
+	case "up", "down", "top", "bottom":
+	default:
 		return "", client.WrapError("Unknown scroll direction: "+dir, client.ErrValidation, "Run `clawchrome-cli scroll down` - directions: up, down, top, bottom")
 	}
 
-	// TODO: need to change to native api call not js.
-	if _, err := callTool("evaluate_script", map[string]any{"function": fn}); err != nil {
+	if _, err := callTool("scroll_page", map[string]any{"direction": dir}); err != nil {
 		return "", err
 	}
 	snap, err := callTool("take_snapshot", map[string]any{})
@@ -309,8 +304,11 @@ func handleWait(args []string) (string, error) {
 	}
 
 	if isDigits(target) {
-		// TODO: need to change to native api call not js.
-		if _, err := callTool("evaluate_script", map[string]any{"function": fmt.Sprintf("new Promise(r => setTimeout(r, %s))", target)}); err != nil {
+		ms, err := strconv.Atoi(target)
+		if err != nil {
+			return "", client.WrapError("Invalid wait duration: "+target, client.ErrValidation, "Run `clawchrome-cli wait 2000` to wait 2 seconds")
+		}
+		if _, err := callTool("wait_duration", map[string]any{"milliseconds": ms}); err != nil {
 			return "", err
 		}
 	} else {

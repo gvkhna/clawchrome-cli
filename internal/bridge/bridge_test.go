@@ -1,6 +1,10 @@
 package bridge
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
+)
 
 func TestBuildTransportArgsDefaultsToHeadless(t *testing.T) {
 	t.Setenv("CLAWCHROME_CLI_HEADED", "")
@@ -35,5 +39,22 @@ func TestParseBridgeCallPayload(t *testing.T) {
 	}
 	if len(args) != 0 {
 		t.Fatalf("expected empty args, got %#v", args)
+	}
+}
+
+func TestCallWaitDuration(t *testing.T) {
+	start := time.Now()
+	if _, err := callWaitDuration(map[string]any{"milliseconds": 1}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if time.Since(start) < time.Millisecond {
+		t.Fatalf("expected wait_duration to sleep")
+	}
+}
+
+func TestCallScrollPageRejectsInvalidDirection(t *testing.T) {
+	_, err := callScrollPage(nil, map[string]any{"direction": "sideways"})
+	if err == nil || !strings.Contains(err.Error(), "invalid scroll_page direction") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
