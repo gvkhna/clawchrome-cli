@@ -57,27 +57,19 @@ builds:
       - -X github.com/gvkhna/clawchrome-cli/internal/cli.Version={{ .Version }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
-universal_binaries:
-  - id: darwin-universal
-    ids:
-      - darwin-amd64
-      - darwin-arm64
-    replace: true
-    name_template: clawchrome-cli
-
 archives:
-  - id: release-archives
+  - id: raw-binaries
     ids:
       - linux-and-windows
-      - darwin-universal
-    name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_{{ if eq .Os "darwin" }}darwin_universal{{ else }}{{ .Os }}_{{ .Arch }}{{ end }}
+      - darwin-amd64
+      - darwin-arm64
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats:
-      - tar.gz
+      - binary
     format_overrides:
       - goos: windows
         formats:
-          - zip
+          - binary
 
 checksum:
   name_template: checksums.txt

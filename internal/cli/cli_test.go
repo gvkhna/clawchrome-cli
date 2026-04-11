@@ -264,12 +264,89 @@ func TestMainCommandHelp(t *testing.T) {
 	}
 }
 
+func TestMainVersion(t *testing.T) {
+	var stdout bytes.Buffer
+	exitCode := Main([]string{"version"}, &stdout, &bytes.Buffer{})
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	if strings.TrimSpace(stdout.String()) != Version {
+		t.Fatalf("unexpected version output: %q", stdout.String())
+	}
+}
+
+func TestMainSelfUpdate(t *testing.T) {
+	restoreSelfUpdate := stubSelfUpdate(t, func(_ string, target string) (string, error) {
+		if target != "v1.2.3" {
+			t.Fatalf("unexpected target version: %q", target)
+		}
+		return "v1.2.3", nil
+	})
+	defer restoreSelfUpdate()
+
+	var stdout bytes.Buffer
+	exitCode := Main([]string{"self-update", "v1.2.3"}, &stdout, &bytes.Buffer{})
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "status: updated") || !strings.Contains(stdout.String(), "version: v1.2.3") {
+		t.Fatalf("unexpected self-update output: %q", stdout.String())
+	}
+}
+
+func TestMainWritesUpdateNoticeToStderr(t *testing.T) {
+	restoreUpdateNotice := stubUpdateNotice(t, func(_ string) (string, error) {
+		return "update available: v9.9.9 -> run `clawchrome-cli self-update`", nil
+	})
+	defer restoreUpdateNotice()
+
+	restoreCallTool := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+		if name != "list_pages" {
+			t.Fatalf("unexpected tool %q with args %#v", name, args)
+		}
+		return "", nil
+	})
+	defer restoreCallTool()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := Main([]string{"pages"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "update available: v9.9.9") {
+		t.Fatalf("expected update notice on stderr, got %q", stderr.String())
+	}
+}
+
 func stubCallTool(t *testing.T, fn func(name string, args map[string]any) (string, error)) func() {
 	t.Helper()
 	prev := callTool
 	callTool = fn
 	return func() {
 		callTool = prev
+	}
+}
+
+func stubSelfUpdate(t *testing.T, fn func(currentVersion string, targetVersion string) (string, error)) func() {
+	t.Helper()
+	prev := selfUpdate
+	selfUpdate = func(currentVersion string, targetVersion string) (string, error) {
+		return fn(currentVersion, targetVersion)
+	}
+	return func() {
+		selfUpdate = prev
+	}
+}
+
+func stubUpdateNotice(t *testing.T, fn func(currentVersion string) (string, error)) func() {
+	t.Helper()
+	prev := updateNotice
+	updateNotice = func(currentVersion string) (string, error) {
+		return fn(currentVersion)
+	}
+	return func() {
+		updateNotice = prev
 	}
 }
 

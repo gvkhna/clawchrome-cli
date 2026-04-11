@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"regexp"
@@ -10,24 +11,31 @@ import (
 	"github.com/gvkhna/clawchrome-cli/internal/client"
 	"github.com/gvkhna/clawchrome-cli/internal/snapshot"
 	"github.com/gvkhna/clawchrome-cli/internal/toonout"
+	"github.com/gvkhna/clawchrome-cli/internal/update"
 )
 
-const Version = "0.1.0-dev"
+var Version = "0.1.0-dev"
 
 var (
 	callTool                    = client.CallTool
 	ensureBridge                = client.EnsureBridge
 	getSessionSnapshotIfRunning = client.GetSessionSnapshotIfRunning
 	stopBridge                  = client.StopBridge
+	selfUpdate                  = func(currentVersion string, targetVersion string) (string, error) {
+		return update.SelfUpdate(context.Background(), currentVersion, targetVersion)
+	}
+	updateNotice = func(currentVersion string) (string, error) {
+		return update.Notice(context.Background(), currentVersion)
+	}
 )
 
 var recoverableOpenErrorPattern = regexp.MustCompile(`(?i)not connected|session (?:closed|not found)|no page`)
 
 func Main(args []string, stdout io.Writer, stderr io.Writer) int {
-	_ = stderr
-
 	if len(args) == 0 || (len(args) == 1 && args[0] == "--full") {
-		_, _ = io.WriteString(stdout, renderHome()+"\n")
+		output := renderHome()
+		_, _ = io.WriteString(stdout, output+"\n")
+		writeUpdateNotice(stderr, "")
 		return 0
 	}
 
@@ -35,6 +43,9 @@ func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 		switch args[0] {
 		case "--help":
 			_, _ = io.WriteString(stdout, topHelp)
+			return 0
+		case "version":
+			_, _ = io.WriteString(stdout, Version+"\n")
 			return 0
 		case "-v", "-V", "--version":
 			_, _ = io.WriteString(stdout, Version+"\n")
@@ -60,6 +71,7 @@ func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 		return exitCode(err)
 	}
 	_, _ = io.WriteString(stdout, output+"\n")
+	writeUpdateNotice(stderr, command)
 	return 0
 }
 
@@ -113,6 +125,10 @@ func runCommand(command string, args []string, full bool) (string, error) {
 		return encode(map[string]any{"status": "ready", "port": port}), nil
 	case "stop":
 		return encode(map[string]any{"status": stopText(stopBridge())}), nil
+	case "version":
+		return Version, nil
+	case "self-update":
+		return handleSelfUpdate(args)
 	case "--help":
 		return topHelp, nil
 	default:
@@ -480,6 +496,18 @@ func handleResize(args []string) (string, error) {
 	return encode(map[string]any{"resized": map[string]int{"width": width, "height": height}}), nil
 }
 
+func handleSelfUpdate(args []string) (string, error) {
+	targetVersion := firstPositionalArg(args)
+	version, err := selfUpdate(Version, targetVersion)
+	if err != nil {
+		return "", client.WrapError(err.Error(), client.ErrUnknown)
+	}
+	return encode(map[string]any{
+		"status":  "updated",
+		"version": version,
+	}), nil
+}
+
 func handleSnapshotCommand(command string, args []string, full bool, missingRefHelp string) (string, error) {
 	uid := firstPositionalArg(args)
 	if uid == "" {
@@ -554,6 +582,21 @@ func exitCode(err error) int {
 		return 2
 	}
 	return 1
+}
+
+func writeUpdateNotice(stderr io.Writer, command string) {
+	if stderr == nil {
+		return
+	}
+	switch command {
+	case "--help", "version", "self-update":
+		return
+	}
+	notice, err := updateNotice(Version)
+	if err != nil || notice == "" {
+		return
+	}
+	_, _ = io.WriteString(stderr, notice+"\n")
 }
 
 func firstPositionalArg(args []string) string {

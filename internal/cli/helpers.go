@@ -15,7 +15,7 @@ commands:
   type <text>, press <key>, scroll <dir>, back, wait <ms|text>,
   hover @<uid>, drag @<from> @<to>, fillform @<uid>=<val>..., dialog <action>,
   upload @<uid> <path>, pages, newpage <url>, selectpage <id>, closepage <id>,
-  resize <w> <h>, start, stop
+  resize <w> <h>, start, stop, version, self-update [version]
 
 flags:
   --help, -v, -V, --version, --full
@@ -153,6 +153,20 @@ Stop the bridge server and close the browser.
 
 examples:
   clawchrome-cli stop`,
+	"version": `usage: clawchrome-cli version
+Print the current clawchrome-cli version.
+
+examples:
+  clawchrome-cli version`,
+	"self-update": `usage: clawchrome-cli self-update [version]
+Download and replace the current binary with the latest release or a specific version.
+
+args:
+  [version]  Optional release tag such as v0.1.0
+
+examples:
+  clawchrome-cli self-update
+  clawchrome-cli self-update v0.1.0`,
 	"pages": `usage: clawchrome-cli pages
 List all open pages/tabs in the browser.
 
@@ -300,6 +314,8 @@ var commandOrder = []string{
 	"resize",
 	"start",
 	"stop",
+	"version",
+	"self-update",
 }
 
 type screenshotArgs struct {

@@ -1,4 +1,5 @@
 .bin/
+dist/
 
 # Go build and test artifacts
 *.exe

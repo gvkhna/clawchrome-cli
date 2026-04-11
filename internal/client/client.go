@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"syscall"
 	"time"
 )
 
@@ -48,7 +47,7 @@ func EnsureBridge() (int, error) {
 		if healthy, _ := checkBridgeHealth(runningPort); healthy {
 			return runningPort, nil
 		}
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+		_ = terminateProcess(pid)
 	}
 
 	exe, err := os.Executable()
@@ -60,7 +59,7 @@ func EnsureBridge() (int, error) {
 	cmd.Env = append(os.Environ(), fmt.Sprintf("CLAWCHROME_CLI_PORT=%d", port))
 	cmd.Stdout = io.Discard
 	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = bridgeSysProcAttr()
 
 	if err := cmd.Start(); err != nil {
 		return 0, err
@@ -141,7 +140,7 @@ func StopBridge() bool {
 	if !ok || !isProcessAlive(pid) {
 		return false
 	}
-	_ = syscall.Kill(pid, syscall.SIGTERM)
+	_ = terminateProcess(pid)
 	return true
 }
 
@@ -241,5 +240,5 @@ func readPIDFile() (int, int, bool) {
 }
 
 func isProcessAlive(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
+	return processAlive(pid)
 }

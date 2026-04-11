@@ -24,6 +24,42 @@ mise run build
 
 The main binary is built to `./.bin/clawchrome-cli`.
 
+## Install
+
+Install the latest release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gvkhna/clawchrome-cli/main/install.sh | sh
+```
+
+Install a specific version:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gvkhna/clawchrome-cli/main/install.sh | sh -s -- --version v0.1.0
+```
+
+By default the installer writes to `~/.local/bin`.
+
+## Update
+
+Print the current version:
+
+```sh
+clawchrome-cli version
+```
+
+Update to the latest release:
+
+```sh
+clawchrome-cli self-update
+```
+
+Update to a specific release:
+
+```sh
+clawchrome-cli self-update v0.1.0
+```
+
 ## Releases
 
 This repo is configured for GoReleaser-based releases.
@@ -38,8 +74,8 @@ mise run release:snapshot
 GitHub releases:
 
 - pushing a `v*` tag runs `.github/workflows/release.yml`
-- GoReleaser publishes release archives for Linux, Windows, and macOS
-- macOS artifacts include a `darwin_universal` binary built from `amd64` and `arm64`
+- GoReleaser publishes raw release binaries for Linux, Windows, and macOS
+- macOS artifacts are published separately for `darwin/amd64` and `darwin/arm64`
 
 ## Notes
 
