@@ -4,6 +4,7 @@ set -eu
 REPO_OWNER="gvkhna"
 REPO_NAME="clawchrome-cli"
 BIN_DIR="${HOME}/.local/bin"
+BIN_DIR_EXPLICIT=0
 VERSION=""
 
 usage() {
@@ -22,6 +23,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --bin-dir)
       BIN_DIR="$2"
+      BIN_DIR_EXPLICIT=1
       shift 2
       ;;
     --help|-h)
@@ -99,8 +101,83 @@ sha256_file() {
   exit 1
 }
 
+is_in_path() {
+  dir="$1"
+  case ":$PATH:" in
+    *":${dir}:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_writable_dir_or_creatable() {
+  dir="$1"
+  if [ -d "$dir" ]; then
+    [ -w "$dir" ]
+    return
+  fi
+  parent="$(dirname "$dir")"
+  while [ "$parent" != "/" ] && [ ! -d "$parent" ]; do
+    parent="$(dirname "$parent")"
+  done
+  [ -d "$parent" ] && [ -w "$parent" ]
+}
+
+choose_bin_dir() {
+  if [ "$BIN_DIR_EXPLICIT" -eq 1 ]; then
+    printf '%s\n' "$BIN_DIR"
+    return
+  fi
+
+  home_local="${HOME}/.local/bin"
+  home_bin="${HOME}/bin"
+
+  for dir in "$home_local" "$home_bin"; do
+    if is_in_path "$dir" && is_writable_dir_or_creatable "$dir"; then
+      printf '%s\n' "$dir"
+      return
+    fi
+  done
+
+  old_ifs="${IFS}"
+  IFS=":"
+  for dir in $PATH; do
+    [ -n "$dir" ] || continue
+    case "$dir" in
+      "$HOME"/*)
+        if is_writable_dir_or_creatable "$dir"; then
+          printf '%s\n' "$dir"
+          IFS="${old_ifs}"
+          return
+        fi
+        ;;
+    esac
+  done
+
+  for dir in $PATH; do
+    [ -n "$dir" ] || continue
+    if [ "$dir" = "/usr/local/bin" ] && is_writable_dir_or_creatable "$dir"; then
+      printf '%s\n' "$dir"
+      IFS="${old_ifs}"
+      return
+    fi
+  done
+
+  for dir in $PATH; do
+    [ -n "$dir" ] || continue
+    if is_writable_dir_or_creatable "$dir"; then
+      printf '%s\n' "$dir"
+      IFS="${old_ifs}"
+      return
+    fi
+  done
+  IFS="${old_ifs}"
+
+  printf '%s\n' "$home_local"
+}
+
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
+BIN_DIR="$(choose_bin_dir)"
 
 if [ -z "$VERSION" ]; then
   VERSION="$(latest_version)"
@@ -146,9 +223,8 @@ cp "$BINARY_PATH" "$TARGET"
 chmod 0755 "$TARGET"
 
 echo "installed ${TARGET}"
-case ":$PATH:" in
-  *":${BIN_DIR}:"*) ;;
-  *)
-    echo "note: ${BIN_DIR} is not in PATH" >&2
-    ;;
-esac
+if ! is_in_path "$BIN_DIR"; then
+  echo "installed to ${BIN_DIR}, which is not currently on PATH" >&2
+  echo "add it with:" >&2
+  echo "  export PATH=\"${BIN_DIR}:\$PATH\"" >&2
+fi
