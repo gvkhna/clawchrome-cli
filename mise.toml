@@ -1,0 +1,44 @@
+[tools]
+go = "1.26.0"
+
+[settings]
+unix_default_inline_shell_args = "bash -euo pipefail -c"
+
+[env]
+GOWORK = "off"
+
+[tasks."mod:download"]
+description = "Download Go module dependencies"
+run = "go mod download"
+
+[tasks."mod:tidy"]
+description = "Normalize go.mod and go.sum"
+run = "go mod tidy"
+
+[tasks.fmt]
+description = "Format Go source"
+run = '''
+find . -type f -name '*.go' -print0 | xargs -0r gofmt -w
+'''
+
+[tasks.test]
+description = "Run unit tests"
+depends = ["mod:download"]
+run = "go test ./..."
+
+[tasks.build]
+description = "Build clawchrome-cli"
+depends = ["mod:download"]
+run = '''
+mkdir -p ./.bin
+go build -o ./.bin/clawchrome-cli ./cmd/clawchrome-cli
+'''
+
+[tasks.check]
+description = "Format, tidy, test, and build"
+run = [
+  { task = "fmt" },
+  { task = "mod:tidy" },
+  { task = "test" },
+  { task = "build" },
+]

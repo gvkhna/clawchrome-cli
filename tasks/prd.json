@@ -1,0 +1,146 @@
+{
+  "name": "clawchrome-cli parity with chrome-devtools-axi",
+  "description": "Bring the supported clawchrome-cli command surface into explicit behavioral parity with chrome-devtools-axi while preserving a canonical Go implementation and excluding intentionally unsupported APIs from the runtime surface.",
+  "branchName": "ralph/clawchrome-cli-parity",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Match pages command output to the JS implementation",
+      "description": "As a CLI user, I want `clawchrome-cli pages` to render the same structured page listing shape as `chrome-devtools-axi` so that page management output is predictable across implementations.",
+      "acceptanceCriteria": [
+        "`clawchrome-cli pages` parses the `list_pages` MCP output instead of returning the raw tool response.",
+        "`clawchrome-cli pages` renders the same structured `pages[n]{id,url,selected}` table shape used by `chrome-devtools-axi`.",
+        "The help text appended to `pages` output matches the intent and structure of the `chrome-devtools-axi` implementation.",
+        "The implementation is written idiomatically in Go and does not shell out to the JS implementation.",
+        "`mise run test` passes",
+        "`mise run build` passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "",
+      "dependsOn": []
+    },
+    {
+      "id": "US-002",
+      "title": "Match closepage behavior and guardrails to the JS implementation",
+      "description": "As a CLI user, I want `clawchrome-cli closepage` to enforce the same last-page safety behavior as `chrome-devtools-axi` so that tab management works the same way across implementations.",
+      "acceptanceCriteria": [
+        "`clawchrome-cli closepage <id>` checks page count before closing a tab.",
+        "When only one page is open, `clawchrome-cli closepage <id>` returns a no-op status and help text matching the `chrome-devtools-axi` behavior rather than attempting the close.",
+        "When multiple pages are open, `clawchrome-cli closepage <id>` closes the target page and returns the same structured status shape as `chrome-devtools-axi`.",
+        "Validation errors for missing or invalid page IDs match the intent and clarity of the `chrome-devtools-axi` implementation.",
+        "The implementation is written idiomatically in Go and does not shell out to the JS implementation.",
+        "`mise run test` passes",
+        "`mise run build` passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001"
+      ]
+    },
+    {
+      "id": "US-003",
+      "title": "Normalize wait command validation, suggestions, and output",
+      "description": "As a CLI user, I want `clawchrome-cli wait` to match the JS CLI's validation messaging, help text, and output structure so that waiting behavior is consistent across implementations.",
+      "acceptanceCriteria": [
+        "`clawchrome-cli wait` emits validation errors for missing targets with the same intent, specificity, and examples as `chrome-devtools-axi`.",
+        "`clawchrome-cli wait <milliseconds>` and `clawchrome-cli wait <text>` produce the same output block structure and suggestion behavior as `chrome-devtools-axi` for the supported command surface.",
+        "The wait command help text and follow-up suggestions in Go match the behavior of the JS implementation rather than using a simplified local variant.",
+        "Any remaining internal JS-evaluation dependency for numeric wait is explicitly isolated and documented only where unavoidable until a native API replacement exists.",
+        "The implementation is written idiomatically in Go and does not shell out to the JS implementation.",
+        "`mise run test` passes",
+        "`mise run build` passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001"
+      ]
+    },
+    {
+      "id": "US-004",
+      "title": "Bring supported command argument parsing into parity with the JS CLI",
+      "description": "As a CLI user, I want supported `clawchrome-cli` commands to accept and validate arguments the same way as `chrome-devtools-axi` so that command usage is predictable across implementations.",
+      "acceptanceCriteria": [
+        "For every supported command in `clawchrome-cli`, argument parsing, `--full` handling, validation messages, and accepted option forms are audited against `chrome-devtools-axi`.",
+        "Any supported command whose parsing is currently simpler in Go is updated to match the JS implementation's behavior for the same command surface.",
+        "Unsupported APIs and commands remain absent from the `clawchrome-cli` runtime surface and are not reintroduced as part of the parity work.",
+        "The implementation is written idiomatically in Go and does not shell out to the JS implementation.",
+        "`mise run test` passes",
+        "`mise run build` passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-001",
+        "US-002",
+        "US-003"
+      ]
+    },
+    {
+      "id": "US-005",
+      "title": "Bring help, suggestions, and TOON output formatting into parity",
+      "description": "As a CLI user, I want `clawchrome-cli` output, help, and next-step suggestions to match `chrome-devtools-axi` for the supported commands so that the Go CLI feels like a direct translation rather than a simplified fork.",
+      "acceptanceCriteria": [
+        "The Go implementation audits `internal/cli/cli.go`, `internal/suggestions/suggestions.go`, and related helpers against `chrome-devtools-axi/src/cli.ts` for every supported command.",
+        "For supported commands, the TOON block ordering, field naming, truncation behavior, and help rendering match the `chrome-devtools-axi` implementation.",
+        "Suggestion generation in Go matches the intent and coverage of the JS implementation for the supported command surface rather than using a lighter-weight subset.",
+        "The implementation remains canonical Go code and does not embed or proxy the JS formatter.",
+        "`mise run test` passes",
+        "`mise run build` passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-004"
+      ]
+    },
+    {
+      "id": "US-006",
+      "title": "Add supported-surface parity tests against the JS CLI contract",
+      "description": "As a maintainer, I want automated tests that pin supported-surface parity between `clawchrome-cli` and `chrome-devtools-axi` so that future changes do not silently drift from the intended Go translation.",
+      "acceptanceCriteria": [
+        "Add table-driven Go tests that cover the supported command surface for argument parsing, validation errors, output shape, and help text parity expectations.",
+        "Tests explicitly cover the previously identified parity gaps: `pages`, `closepage`, `wait`, supported command option handling, suggestions, and TOON output formatting.",
+        "The tests verify parity against the behavior contract defined by `chrome-devtools-axi`, while remaining fully implemented in Go.",
+        "Unsupported APIs and commands are not included as runtime support targets in the parity suite.",
+        "`mise run test` passes",
+        "`mise run build` passes"
+      ],
+      "priority": 6,
+      "passes": true,
+      "notes": "",
+      "dependsOn": [
+        "US-005"
+      ]
+    },
+    {
+      "id": "US-007",
+      "title": "Replace scroll and numeric wait JS evaluation with native tool calls",
+      "description": "As a maintainer, I want the remaining `scroll` and numeric `wait` TODO paths in `clawchrome-cli` to stop relying on `evaluate_script` so that the Go CLI no longer depends on JS execution for those supported behaviors.",
+      "acceptanceCriteria": [
+        "The `scroll` command no longer calls `evaluate_script` and instead uses a native MCP tool path or an equivalent canonical non-JS implementation.",
+        "The numeric `wait` path no longer calls `evaluate_script` and instead uses a native MCP tool path or an equivalent canonical non-JS implementation.",
+        "The TODO comments in `internal/cli/cli.go` for `scroll` and numeric `wait` are removed because the native replacement is complete.",
+        "The resulting behavior for supported usage remains compatible with the intended `clawchrome-cli` command contract after the native migration.",
+        "The implementation is written idiomatically in Go and does not shell out to the JS implementation.",
+        "`mise run test` passes",
+        "`mise run build` passes"
+      ],
+      "priority": 7,
+      "passes": false,
+      "notes": "",
+      "dependsOn": [
+        "US-006"
+      ]
+    }
+  ],
+  "metadata": {
+    "updatedAt": "2026-04-11T03:45:28.464Z"
+  }
+}
