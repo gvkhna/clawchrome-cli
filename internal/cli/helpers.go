@@ -12,10 +12,10 @@ const topHelp = `usage: clawchrome-cli [command] [args] [flags]
 
 commands:
   open <url>, snapshot [--form] [--text], screenshot <path>, click @<uid>, fill @<uid> <text>,
-  type <text>, press <key>, scroll <dir>, back, wait <ms|text>,
+  type <text>, press <key>, scroll <dir>, back, forward, reload, wait <ms|text>,
   hover @<uid>, drag @<from> @<to>, fillform @<uid>=<val>..., dialog <action>,
-  upload @<uid> <path>, pages, newpage <url>, selectpage <id>, closepage <id>,
-  resize <w> <h>, start, stop, version, self-update [version]
+  form <check|uncheck|select|upload>, pages, newpage <url>, selectpage <id>, closepage <id>,
+  resize <w> <h>, video <start|stop>, start, stop, version, self-update [version]
 
 flags:
   --help, -v, -V, --version, --full
@@ -140,6 +140,24 @@ flags:
 examples:
   clawchrome-cli back
   clawchrome-cli back --full`,
+	"forward": `usage: clawchrome-cli forward [--full]
+Navigate forward in browser history.
+
+flags:
+  --full  Show complete snapshot without truncation
+
+examples:
+  clawchrome-cli forward
+  clawchrome-cli forward --full`,
+	"reload": `usage: clawchrome-cli reload [--full]
+Reload the current page.
+
+flags:
+  --full  Show complete snapshot without truncation
+
+examples:
+  clawchrome-cli reload
+  clawchrome-cli reload --full`,
 	"wait": `usage: clawchrome-cli wait <ms|text>
 Wait for a duration or for text to appear on the page.
 
@@ -225,6 +243,17 @@ args:
 examples:
   clawchrome-cli resize 1280 720
   clawchrome-cli resize 390 844`,
+	"video": `usage: clawchrome-cli video <start|stop> [path]
+Start or stop page video recording.
+
+args:
+  <start|stop>  Video action to perform (required)
+  [path]        Output path for video start. Omit to let the runtime choose.
+
+examples:
+  clawchrome-cli video start
+  clawchrome-cli video start ./capture.mp4
+  clawchrome-cli video stop`,
 	"hover": `usage: clawchrome-cli hover @<uid> [--full]
 Hover over an element to trigger hover states.
 
@@ -271,18 +300,22 @@ examples:
   clawchrome-cli dialog accept
   clawchrome-cli dialog dismiss
   clawchrome-cli dialog accept "confirmed"`,
-	"upload": `usage: clawchrome-cli upload @<uid> <path> [--full]
-Upload a file through a file input element.
+	"form": `usage: clawchrome-cli form <action> [args] [--full]
+Perform a targeted form control action.
 
 args:
-  @<uid>  File input element ref from snapshot (required)
-  <path>  Local file path to upload (required)
+  check @<uid>            Check a checkbox or radio control
+  uncheck @<uid>          Uncheck a checkbox control
+  select @<uid> <value>   Select an option by value or label
+  upload @<uid> <path>    Upload a file through a file input
 
 flags:
   --full  Show complete snapshot without truncation
 
 examples:
-  clawchrome-cli upload @5 ./photo.jpg`,
+  clawchrome-cli form check @3
+  clawchrome-cli form select @4 "United States"
+  clawchrome-cli form upload @5 ./photo.jpg`,
 }
 
 var commandSupportsFullFlag = map[string]bool{
@@ -294,10 +327,12 @@ var commandSupportsFullFlag = map[string]bool{
 	"press":      true,
 	"scroll":     true,
 	"back":       true,
+	"forward":    true,
+	"reload":     true,
 	"hover":      true,
 	"drag":       true,
 	"fillform":   true,
-	"upload":     true,
+	"form":       true,
 	"newpage":    true,
 	"selectpage": true,
 }
@@ -312,17 +347,20 @@ var commandOrder = []string{
 	"press",
 	"scroll",
 	"back",
+	"forward",
+	"reload",
 	"wait",
 	"hover",
 	"drag",
 	"fillform",
 	"dialog",
-	"upload",
+	"form",
 	"pages",
 	"newpage",
 	"selectpage",
 	"closepage",
 	"resize",
+	"video",
 	"start",
 	"stop",
 	"version",

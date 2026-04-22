@@ -104,6 +104,10 @@ func runCommand(command string, args []string, full bool) (string, error) {
 		return handleScroll(args, full)
 	case "back":
 		return handleBack(args, full)
+	case "forward":
+		return handleForward(args, full)
+	case "reload":
+		return handleReload(args, full)
 	case "wait":
 		return handleWait(args)
 	case "hover":
@@ -112,10 +116,10 @@ func runCommand(command string, args []string, full bool) (string, error) {
 		return handleDrag(args, full)
 	case "fillform":
 		return handleFillForm(args, full)
+	case "form":
+		return handleForm(args, full)
 	case "dialog":
 		return handleDialog(args)
-	case "upload":
-		return handleUpload(args, full)
 	case "pages":
 		return handlePages(args)
 	case "newpage":
@@ -126,6 +130,8 @@ func runCommand(command string, args []string, full bool) (string, error) {
 		return handleClosePage(args)
 	case "resize":
 		return handleResize(args)
+	case "video":
+		return handleVideo(args)
 	case "start":
 		return handleStart(args)
 	case "stop":
@@ -368,6 +374,31 @@ func handleBack(args []string, full bool) (string, error) {
 	return formatPageOutput(snapshot.StripSnapshotHeader(snap), "back", "", full), nil
 }
 
+func handleForward(args []string, full bool) (string, error) {
+	if err := requireNoArgs("forward", args); err != nil {
+		return "", err
+	}
+	return handleHistoryNavigation("forward", full)
+}
+
+func handleReload(args []string, full bool) (string, error) {
+	if err := requireNoArgs("reload", args); err != nil {
+		return "", err
+	}
+	return handleHistoryNavigation("reload", full)
+}
+
+func handleHistoryNavigation(navType string, full bool) (string, error) {
+	if _, err := callTool("navigate_page", map[string]any{"type": navType}); err != nil {
+		return "", err
+	}
+	snap, err := callTool("take_snapshot", map[string]any{})
+	if err != nil {
+		return "", err
+	}
+	return formatPageOutput(snapshot.StripSnapshotHeader(snap), navType, "", full), nil
+}
+
 func handleWait(args []string) (string, error) {
 	target := strings.Join(args, " ")
 	if target == "" {
@@ -452,17 +483,94 @@ func handleDialog(args []string) (string, error) {
 	return encode(map[string]any{"dialog": action}), nil
 }
 
-func handleUpload(args []string, full bool) (string, error) {
+func handleForm(args []string, full bool) (string, error) {
 	if len(args) == 0 {
-		return "", validationError("upload", "Missing element ref")
+		return "", validationError("form", "Missing form action")
+	}
+
+	action := strings.ToLower(strings.TrimSpace(args[0]))
+	switch action {
+	case "check":
+		return handleFormCheck(args[1:], true, full)
+	case "uncheck":
+		return handleFormCheck(args[1:], false, full)
+	case "select":
+		return handleFormSelect(args[1:], full)
+	case "upload":
+		return handleFormUpload(args[1:], full)
+	default:
+		if strings.HasPrefix(args[0], "-") {
+			return "", unexpectedArgError("form", args[0])
+		}
+		return "", validationError("form", "Unknown form action: "+args[0])
+	}
+}
+
+func handleFormCheck(args []string, checked bool, full bool) (string, error) {
+	if len(args) == 0 {
+		return "", validationError("form", "Missing element ref")
+	}
+	if len(args) > 1 {
+		return "", unexpectedArgError("form", args[1])
+	}
+	uid, err := validateRefArg("form", args[0])
+	if err != nil {
+		return "", err
+	}
+
+	elements := []map[string]any{{
+		"uid":   uid,
+		"type":  "checkbox",
+		"value": checked,
+	}}
+	snap, err := callWithSnapshot("fill_form", map[string]any{"elements": elements})
+	if err != nil {
+		return "", err
+	}
+
+	action := "check"
+	if !checked {
+		action = "uncheck"
+	}
+	return formatPageOutput(snap, "form "+action+" @"+uid, "", full), nil
+}
+
+func handleFormSelect(args []string, full bool) (string, error) {
+	if len(args) == 0 {
+		return "", validationError("form", "Missing element ref")
+	}
+	uid, err := validateRefArg("form", args[0])
+	if err != nil {
+		return "", err
+	}
+	value := strings.Join(args[1:], " ")
+	if value == "" {
+		return "", validationError("form", "Missing select value")
+	}
+
+	elements := []map[string]any{{
+		"uid":   uid,
+		"type":  "select",
+		"value": value,
+	}}
+	snap, err := callWithSnapshot("fill_form", map[string]any{"elements": elements})
+	if err != nil {
+		return "", err
+	}
+	return formatPageOutput(snap, "form select @"+uid, "", full), nil
+}
+
+func handleFormUpload(args []string, full bool) (string, error) {
+	if len(args) == 0 {
+		return "", validationError("form", "Missing element ref")
 	}
 	if len(args) < 2 || args[1] == "" {
-		return "", validationError("upload", "Missing file path")
+		return "", validationError("form", "Missing file path")
 	}
 	if len(args) > 2 {
-		return "", unexpectedArgError("upload", args[2])
+		return "", unexpectedArgError("form", args[2])
 	}
-	uid, err := validateRefArg("upload", args[0])
+	uid, err := validateRefArg("form", args[0])
 	if err != nil {
 		return "", err
 	}
@@ -471,7 +579,7 @@ func handleUpload(args []string, full bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return formatPageOutput(snap, "upload", "", full), nil
+	return formatPageOutput(snap, "form upload @"+uid, "", full), nil
 }
 
 func handlePages(args []string) (string, error) {
@@ -616,6 +724,64 @@ func handleResize(args []string) (string, error) {
 		return "", err
 	}
 	return encode(map[string]any{"resized": map[string]int{"width": width, "height": height}}), nil
+}
+
+func handleVideo(args []string) (string, error) {
+	if len(args) == 0 {
+		return "", validationError("video", "Missing video action")
+	}
+	action := strings.ToLower(strings.TrimSpace(args[0]))
+	switch action {
+	case "start":
+		return handleVideoStart(args[1:])
+	case "stop":
+		return handleVideoStop(args[1:])
+	default:
+		if strings.HasPrefix(args[0], "-") {
+			return "", unexpectedArgError("video", args[0])
+		}
+		return "", validationError("video", "Unknown video action: "+args[0])
+	}
+}
+
+func handleVideoStart(args []string) (string, error) {
+	if len(args) > 1 {
+		return "", unexpectedArgError("video", args[1])
+	}
+	toolArgs := map[string]any{}
+	if len(args) == 1 {
+		if strings.HasPrefix(args[0], "-") {
+			return "", unexpectedArgError("video", args[0])
+		}
+		toolArgs["path"] = args[0]
+	}
+	result, err := callTool("screencast_start", toolArgs)
+	if err != nil {
+		return "", err
+	}
+	payload := map[string]any{"video": map[string]any{"status": "started"}}
+	if path, ok := toolArgs["path"].(string); ok && path != "" {
+		payload["video"].(map[string]any)["path"] = path
+	}
+	if strings.TrimSpace(result) != "" {
+		payload["video"].(map[string]any)["result"] = strings.TrimSpace(result)
+	}
+	return encode(payload), nil
+}
+
+func handleVideoStop(args []string) (string, error) {
+	if err := requireNoArgs("video", args); err != nil {
+		return "", err
+	}
+	result, err := callTool("screencast_stop", map[string]any{})
+	if err != nil {
+		return "", err
+	}
+	payload := map[string]any{"video": map[string]any{"status": "stopped"}}
+	if strings.TrimSpace(result) != "" {
+		payload["video"].(map[string]any)["result"] = strings.TrimSpace(result)
+	}
+	return encode(payload), nil
 }
 
 func handleSelfUpdate(args []string) (string, error) {

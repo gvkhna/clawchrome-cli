@@ -11,10 +11,10 @@ func TestBuildTransportArgsDefaultsToHeadless(t *testing.T) {
 	t.Setenv("CLAWCHROME_CLI_CHROME_ARGS", "")
 
 	args := BuildTransportArgs()
-	if len(args) != 4 {
-		t.Fatalf("expected 4 args, got %d: %#v", len(args), args)
+	if len(args) != 5 {
+		t.Fatalf("expected 5 args, got %d: %#v", len(args), args)
 	}
-	if args[0] != "-y" || args[1] != "chrome-devtools-mcp@latest" || args[2] != "--isolated" || args[3] != "--headless" {
+	if args[0] != "-y" || args[1] != "chrome-devtools-mcp@latest" || args[2] != "--isolated" || args[3] != "--experimental-screencast" || args[4] != "--headless" {
 		t.Fatalf("unexpected args: %#v", args)
 	}
 }
@@ -24,7 +24,7 @@ func TestBuildTransportArgsForwardsChromeArgs(t *testing.T) {
 	t.Setenv("CLAWCHROME_CLI_CHROME_ARGS", "--enable-gpu --ignore-gpu-blocklist")
 
 	args := BuildTransportArgs()
-	if args[3] != "--chrome-arg=--enable-gpu" || args[4] != "--chrome-arg=--ignore-gpu-blocklist" {
+	if args[4] != "--chrome-arg=--enable-gpu" || args[5] != "--chrome-arg=--ignore-gpu-blocklist" {
 		t.Fatalf("unexpected chrome args: %#v", args)
 	}
 }

@@ -63,6 +63,7 @@ func TestAXICommandHelpAliasesCanFollowFlagsOrArgs(t *testing.T) {
 	cases := [][]string{
 		{"snapshot", "--full", "-h"},
 		{"click", "@1", "--help"},
+		{"form", "check", "@1", "--help"},
 	}
 
 	for _, args := range cases {
@@ -105,13 +106,20 @@ func TestAXIValidationErrorsAreScopedAndDoNotCallBackend(t *testing.T) {
 		{"scroll invalid direction", []string{"scroll", "sideways"}, "Unknown scroll direction", "usage: clawchrome-cli scroll"},
 		{"scroll unknown flag", []string{"scroll", "--bogus"}, "Unexpected", "usage: clawchrome-cli scroll"},
 		{"back unexpected arg", []string{"back", "extra"}, "Unexpected", "usage: clawchrome-cli back"},
+		{"forward unexpected arg", []string{"forward", "extra"}, "Unexpected", "usage: clawchrome-cli forward"},
+		{"reload unexpected arg", []string{"reload", "extra"}, "Unexpected", "usage: clawchrome-cli reload"},
 		{"wait missing target", []string{"wait"}, "Missing wait target", "usage: clawchrome-cli wait"},
 		{"hover missing ref", []string{"hover"}, "Missing element ref", "usage: clawchrome-cli hover"},
 		{"drag missing target", []string{"drag", "@1"}, "Missing element refs", "usage: clawchrome-cli drag"},
 		{"fillform invalid entry", []string{"fillform", "name=value"}, "No valid field entries", "usage: clawchrome-cli fillform"},
 		{"fillform unknown flag", []string{"fillform", "--bogus"}, "Unexpected", "usage: clawchrome-cli fillform"},
 		{"dialog invalid action", []string{"dialog", "close"}, "Missing or invalid action", "usage: clawchrome-cli dialog"},
-		{"upload missing path", []string{"upload", "@1"}, "Missing file path", "usage: clawchrome-cli upload"},
+		{"form missing action", []string{"form"}, "Missing form action", "usage: clawchrome-cli form"},
+		{"form invalid action", []string{"form", "toggle"}, "Unknown form action", "usage: clawchrome-cli form"},
+		{"form check missing ref", []string{"form", "check"}, "Missing element ref", "usage: clawchrome-cli form"},
+		{"form check unexpected arg", []string{"form", "check", "@1", "extra"}, "Unexpected", "usage: clawchrome-cli form"},
+		{"form select missing value", []string{"form", "select", "@2"}, "Missing select value", "usage: clawchrome-cli form"},
+		{"form upload missing path", []string{"form", "upload", "@1"}, "Missing file path", "usage: clawchrome-cli form"},
 		{"pages unexpected arg", []string{"pages", "extra"}, "Unexpected", "usage: clawchrome-cli pages"},
 		{"newpage missing url", []string{"newpage"}, "Missing URL", "usage: clawchrome-cli newpage"},
 		{"newpage unknown flag", []string{"newpage", "https://example.com", "--bogus"}, "Unexpected", "usage: clawchrome-cli newpage"},
@@ -121,6 +129,12 @@ func TestAXIValidationErrorsAreScopedAndDoNotCallBackend(t *testing.T) {
 		{"closepage negative id", []string{"closepage", "-1"}, "Invalid page ID", "usage: clawchrome-cli closepage"},
 		{"resize invalid size", []string{"resize", "wide", "tall"}, "Width and height must be numbers", "usage: clawchrome-cli resize"},
 		{"resize non-positive size", []string{"resize", "0", "720"}, "positive numbers", "usage: clawchrome-cli resize"},
+		{"video missing action", []string{"video"}, "Missing video action", "usage: clawchrome-cli video"},
+		{"video invalid action", []string{"video", "pause"}, "Unknown video action", "usage: clawchrome-cli video"},
+		{"video start unknown flag", []string{"video", "start", "--bogus"}, "Unexpected", "usage: clawchrome-cli video"},
+		{"video start unexpected arg", []string{"video", "start", "./a.mp4", "extra"}, "Unexpected", "usage: clawchrome-cli video"},
+		{"video stop unexpected arg", []string{"video", "stop", "extra"}, "Unexpected", "usage: clawchrome-cli video"},
+		{"video unexpected full", []string{"video", "--full"}, "Unexpected", "usage: clawchrome-cli video"},
 		{"start unknown flag", []string{"start", "--bogus"}, "Unexpected", "usage: clawchrome-cli start"},
 		{"stop unexpected arg", []string{"stop", "extra"}, "Unexpected", "usage: clawchrome-cli stop"},
 		{"version unexpected arg", []string{"version", "extra"}, "Unexpected", "usage: clawchrome-cli version"},
@@ -161,7 +175,7 @@ func TestAXIRefArgumentsValidateBeforeBackendCalls(t *testing.T) {
 		{"hover missing sigil", []string{"hover", "menu"}, "usage: clawchrome-cli hover"},
 		{"drag bad source", []string{"drag", "source", "@2"}, "usage: clawchrome-cli drag"},
 		{"drag bad target", []string{"drag", "@1", "target"}, "usage: clawchrome-cli drag"},
-		{"upload missing sigil", []string{"upload", "file-input", "./photo.jpg"}, "usage: clawchrome-cli upload"},
+		{"form upload missing sigil", []string{"form", "upload", "file-input", "./photo.jpg"}, "usage: clawchrome-cli form"},
 		{"screenshot bad uid", []string{"screenshot", "./button.png", "--uid", "button"}, "usage: clawchrome-cli screenshot"},
 	}
 

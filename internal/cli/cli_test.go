@@ -47,6 +47,35 @@ func TestGetCommandHelp(t *testing.T) {
 		}
 	})
 
+	t.Run("forward and reload include full", func(t *testing.T) {
+		for _, command := range []string{"forward", "reload"} {
+			help := getCommandHelp(command)
+			if !strings.Contains(help, "--full") {
+				t.Fatalf("expected %s help to include --full: %q", command, help)
+			}
+		}
+	})
+
+	t.Run("video has no full flag", func(t *testing.T) {
+		help := getCommandHelp("video")
+		if !strings.Contains(help, "video <start|stop>") {
+			t.Fatalf("expected video help, got %q", help)
+		}
+		if strings.Contains(help, "--full") {
+			t.Fatalf("video help should not include --full")
+		}
+	})
+
+	t.Run("form groups control actions and includes full", func(t *testing.T) {
+		help := getCommandHelp("form")
+		if !strings.Contains(help, "form <action>") || !strings.Contains(help, "check @<uid>") || !strings.Contains(help, "upload @<uid> <path>") {
+			t.Fatalf("expected form help to describe grouped actions, got %q", help)
+		}
+		if !strings.Contains(help, "--full") {
+			t.Fatalf("expected form help to include --full")
+		}
+	})
+
 	t.Run("snapshot includes form and text filters", func(t *testing.T) {
 		help := getCommandHelp("snapshot")
 		if !strings.Contains(help, "--form") || !strings.Contains(help, "--text") {
@@ -329,6 +358,192 @@ func TestMainScrollUsesNativeTool(t *testing.T) {
 	if !strings.Contains(stdout.String(), "snapshot:") {
 		t.Fatalf("expected snapshot output, got %q", stdout.String())
 	}
+}
+
+func TestMainForwardAndReloadUseNavigatePage(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		navType string
+	}{
+		{command: "forward", navType: "forward"},
+		{command: "reload", navType: "reload"},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			var calls []string
+			restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+				calls = append(calls, name)
+				switch name {
+				case "navigate_page":
+					if args["type"] != tc.navType {
+						t.Fatalf("unexpected navigate_page args: %#v", args)
+					}
+					return "", nil
+				case "take_snapshot":
+					return "## Latest page snapshot\nRootWebArea \"Example\"\n", nil
+				default:
+					t.Fatalf("unexpected tool %q with args %#v", name, args)
+					return "", nil
+				}
+			})
+			defer restore()
+
+			var stdout bytes.Buffer
+			exitCode := Main([]string{tc.command}, &stdout, &bytes.Buffer{})
+			if exitCode != 0 {
+				t.Fatalf("expected exit code 0, got %d", exitCode)
+			}
+			if strings.Join(calls, ",") != "navigate_page,take_snapshot" {
+				t.Fatalf("unexpected call sequence: %#v", calls)
+			}
+			if !strings.Contains(stdout.String(), "snapshot:") {
+				t.Fatalf("expected snapshot output, got %q", stdout.String())
+			}
+		})
+	}
+}
+
+func TestMainFormActionsUseCompatibilityTools(t *testing.T) {
+	snapshotText := "ok\n## Latest page snapshot\nRootWebArea \"Example\"\n  uid=1 checkbox \"Terms\"\n"
+
+	t.Run("check uses fill_form checkbox true", func(t *testing.T) {
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "fill_form" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			if args["includeSnapshot"] != true {
+				t.Fatalf("expected includeSnapshot=true, got %#v", args)
+			}
+			elements, ok := args["elements"].([]map[string]any)
+			if !ok || len(elements) != 1 {
+				t.Fatalf("unexpected fill_form elements: %#v", args["elements"])
+			}
+			if elements[0]["uid"] != "1" || elements[0]["type"] != "checkbox" || elements[0]["value"] != true {
+				t.Fatalf("unexpected checkbox element: %#v", elements[0])
+			}
+			return snapshotText, nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"form", "check", "@1"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d", exitCode)
+		}
+		if !strings.Contains(stdout.String(), "snapshot:") {
+			t.Fatalf("expected snapshot output, got %q", stdout.String())
+		}
+	})
+
+	t.Run("uncheck uses fill_form checkbox false", func(t *testing.T) {
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "fill_form" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			elements, ok := args["elements"].([]map[string]any)
+			if !ok || len(elements) != 1 {
+				t.Fatalf("unexpected fill_form elements: %#v", args["elements"])
+			}
+			if elements[0]["uid"] != "1" || elements[0]["type"] != "checkbox" || elements[0]["value"] != false {
+				t.Fatalf("unexpected checkbox element: %#v", elements[0])
+			}
+			return snapshotText, nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"form", "uncheck", "@1"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d", exitCode)
+		}
+	})
+
+	t.Run("select uses fill_form select value", func(t *testing.T) {
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "fill_form" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			elements, ok := args["elements"].([]map[string]any)
+			if !ok || len(elements) != 1 {
+				t.Fatalf("unexpected fill_form elements: %#v", args["elements"])
+			}
+			if elements[0]["uid"] != "2" || elements[0]["type"] != "select" || elements[0]["value"] != "United States" {
+				t.Fatalf("unexpected select element: %#v", elements[0])
+			}
+			return snapshotText, nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"form", "select", "@2", "United", "States"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d", exitCode)
+		}
+	})
+
+	t.Run("upload uses upload_file", func(t *testing.T) {
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "upload_file" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			if args["uid"] != "5" || args["filePath"] != "./photo.jpg" || args["includeSnapshot"] != true {
+				t.Fatalf("unexpected upload_file args: %#v", args)
+			}
+			return snapshotText, nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"form", "upload", "@5", "./photo.jpg"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d", exitCode)
+		}
+	})
+}
+
+func TestMainVideoUsesScreencastTools(t *testing.T) {
+	t.Run("start with path", func(t *testing.T) {
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "screencast_start" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			if args["path"] != "./capture.mp4" {
+				t.Fatalf("unexpected screencast_start args: %#v", args)
+			}
+			return "recording started", nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"video", "start", "./capture.mp4"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d", exitCode)
+		}
+		if !strings.Contains(stdout.String(), "status: started") || !strings.Contains(stdout.String(), "path: ./capture.mp4") {
+			t.Fatalf("unexpected video start output: %q", stdout.String())
+		}
+	})
+
+	t.Run("stop", func(t *testing.T) {
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "screencast_stop" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			if len(args) != 0 {
+				t.Fatalf("unexpected screencast_stop args: %#v", args)
+			}
+			return "recording stopped", nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"video", "stop"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d", exitCode)
+		}
+		if !strings.Contains(stdout.String(), "status: stopped") || !strings.Contains(stdout.String(), "recording stopped") {
+			t.Fatalf("unexpected video stop output: %q", stdout.String())
+		}
+	})
 }
 
 func TestMainCommandHelp(t *testing.T) {

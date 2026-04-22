@@ -101,7 +101,7 @@ type mcpClient struct {
 }
 
 func BuildTransportArgs() []string {
-	args := []string{"-y", "chrome-devtools-mcp@latest", "--isolated"}
+	args := []string{"-y", "chrome-devtools-mcp@latest", "--isolated", "--experimental-screencast"}
 	if os.Getenv("CLAWCHROME_CLI_HEADED") != "1" {
 		args = append(args, "--headless")
 	}
