@@ -48,7 +48,10 @@ Element commands use snapshot refs such as `@e12` or `@e27`. Run `clawchrome-cli
 - `dialog accept|dismiss [text]`: handle alerts, confirms, and prompts.
 - `resize <width> <height>`: set viewport size.
 - `video start [path]` and `video stop`: record and stop page video.
-- `start [url]`, `stop`, `version`, `self-update [version]`: lifecycle and maintenance commands.
+- `start [url] [--token <token>] [--agent-name <name>]`: start the browsing session. `--token` saves HTTP auth for later commands; `--agent-name` saves agent metadata for runtime HTTP requests.
+- `stop`: stop the bridge.
+- `version`: print the installed version.
+- `self-update`: update the CLI.
 
 ## Common Workflows
 
@@ -79,6 +82,13 @@ clawchrome-cli snapshot --full
 clawchrome-cli screenshot
 clawchrome-cli screenshot ./checkout.png --full-page
 clawchrome-cli screenshot ./button.png --uid @e29
+```
+
+Configure HTTP auth:
+
+```sh
+clawchrome-cli start --token "$CLAWCHROME_TOKEN" --agent-name codex-worker
+clawchrome-cli status
 ```
 
 Handle forms and dialogs:
