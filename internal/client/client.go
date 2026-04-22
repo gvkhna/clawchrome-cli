@@ -153,7 +153,7 @@ func CallRuntimeHTTPTool(name string, args map[string]any) (RuntimeHTTPToolRespo
 		return RuntimeHTTPToolResponse{}, WrapError(
 			"mouse commands require runtime HTTP transport; the stdio chrome-devtools-mcp bridge does not expose browser_mouse_* tools.",
 			ErrValidation,
-			"Set CLAWCHROME_CLI_TRANSPORT=http; set CLAWCHROME_CLI_HTTP_URL only to override the runtime API target",
+			"Unset CLAWCHROME_CLI_TRANSPORT or set it to http",
 		)
 	}
 	state, err := ensureHTTPSession(cfg)
@@ -643,7 +643,7 @@ func ensureStdioSession() (sessionState, error) {
 func loadTransportConfig() (transportConfig, error) {
 	mode := strings.TrimSpace(os.Getenv("CLAWCHROME_CLI_TRANSPORT"))
 	if mode == "" {
-		mode = transportStdio
+		mode = transportHTTP
 	}
 	if mode != transportStdio && mode != transportHTTP {
 		return transportConfig{}, WrapError("Unsupported CLAWCHROME_CLI_TRANSPORT: "+mode, ErrValidation)

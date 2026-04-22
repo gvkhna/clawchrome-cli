@@ -21,9 +21,9 @@ flags:
   --help, -v, -V, --version, --full
 
 environment:
-  CLAWCHROME_CLI_TRANSPORT=stdio   Transport mode: stdio (default) or http
+  CLAWCHROME_CLI_TRANSPORT=stdio   Optional local stdio transport override
   CLAWCHROME_CLI_HTTP_URL=...      Optional runtime API URL override (default: https://www.clawchrome.com)
-  CLAWCHROME_CLI_HTTP_BEARER_TOKEN Auth bearer token override when transport is http
+  CLAWCHROME_CLI_HTTP_BEARER_TOKEN Optional auth token override
   CLAWCHROME_CLI_HEADED=1          Run Chrome headed instead of headless
   CLAWCHROME_CLI_CHROME_ARGS=...   Forward additional Chrome flags
   CLAWCHROME_CLI_PORT=9224         Override bridge server port

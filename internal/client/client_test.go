@@ -229,7 +229,7 @@ func TestGetClientStatusReportsAuthWithoutTokenValue(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "")
 	t.Setenv("CLAWCHROME_CLI_HTTP_URL", "")
 	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "")
 
@@ -248,11 +248,11 @@ func TestGetClientStatusReportsAuthWithoutTokenValue(t *testing.T) {
 	}
 }
 
-func TestHTTPTransportDefaultsToProductionURL(t *testing.T) {
+func TestDefaultTransportUsesHTTPProductionTarget(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
-	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "")
 	t.Setenv("CLAWCHROME_CLI_HTTP_URL", "")
 	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret-token")
 
@@ -262,6 +262,9 @@ func TestHTTPTransportDefaultsToProductionURL(t *testing.T) {
 	}
 	if cfg.baseURL != defaultRuntimeHTTPURL {
 		t.Fatalf("expected default runtime URL %q, got %q", defaultRuntimeHTTPURL, cfg.baseURL)
+	}
+	if cfg.mode != transportHTTP {
+		t.Fatalf("expected default transport %q, got %q", transportHTTP, cfg.mode)
 	}
 }
 

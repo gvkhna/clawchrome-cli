@@ -101,7 +101,7 @@ func GetAuthStatus() (AuthConfigStatus, error) {
 func GetClientStatus() (ClientStatus, error) {
 	mode := strings.TrimSpace(os.Getenv("CLAWCHROME_CLI_TRANSPORT"))
 	if mode == "" {
-		mode = transportStdio
+		mode = transportHTTP
 	}
 	if mode != transportStdio && mode != transportHTTP {
 		return ClientStatus{}, WrapError("Unsupported CLAWCHROME_CLI_TRANSPORT: "+mode, ErrValidation)
