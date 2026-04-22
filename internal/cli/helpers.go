@@ -229,19 +229,17 @@ List all open pages/tabs in the browser.
 
 examples:
   clawchrome-cli pages`,
-	"newpage": `usage: clawchrome-cli newpage <url> [--background] [--full]
+	"newpage": `usage: clawchrome-cli newpage <url> [--full]
 Open a new tab and navigate to a URL.
 
 args:
   <url>  URL to open (required)
 
 flags:
-  --background  Open in background without bringing to front
-  --full        Show complete snapshot without truncation
+  --full  Show complete snapshot without truncation
 
 examples:
-  clawchrome-cli newpage https://example.com
-  clawchrome-cli newpage https://example.com --background`,
+  clawchrome-cli newpage https://example.com`,
 	"selectpage": `usage: clawchrome-cli selectpage <id> [--full]
 Switch to a tab by page ID.
 

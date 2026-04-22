@@ -21,9 +21,9 @@ func TestGetCommandHelp(t *testing.T) {
 		}
 	})
 
-	t.Run("newpage includes background and full", func(t *testing.T) {
+	t.Run("newpage includes full and no background flag", func(t *testing.T) {
 		help := getCommandHelp("newpage")
-		if !strings.Contains(help, "--background") || !strings.Contains(help, "--full") {
+		if !strings.Contains(help, "--full") || strings.Contains(help, "--background") {
 			t.Fatalf("unexpected newpage help: %q", help)
 		}
 	})
@@ -406,25 +406,49 @@ func TestMainPagesOutputMatchesStructuredShape(t *testing.T) {
 }
 
 func TestMainSnapshotPassesFilterArgs(t *testing.T) {
-	restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
-		if name != "take_snapshot" {
-			t.Fatalf("unexpected tool %q with args %#v", name, args)
-		}
-		if args["form"] != true || args["text"] != true || args["verbose"] != true {
-			t.Fatalf("expected form, text, and verbose args, got %#v", args)
-		}
-		return "## Latest page snapshot\nRootWebArea \"Example\"\n  uid=1 textbox \"Search\"\n", nil
-	})
-	defer restore()
+	t.Run("filtered full output does not send conflicting verbose filter", func(t *testing.T) {
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "take_snapshot" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			if args["form"] != true || args["text"] != true {
+				t.Fatalf("expected form and text args, got %#v", args)
+			}
+			if _, ok := args["verbose"]; ok {
+				t.Fatalf("did not expect verbose with form/text filters, got %#v", args)
+			}
+			return "## Latest page snapshot\nRootWebArea \"Example\"\n  uid=1 textbox \"Search\"\n", nil
+		})
+		defer restore()
 
-	var stdout bytes.Buffer
-	exitCode := Main([]string{"snapshot", "--form", "--text", "--full"}, &stdout, &bytes.Buffer{})
-	if exitCode != 0 {
-		t.Fatalf("expected exit code 0, got %d", exitCode)
-	}
-	if !strings.Contains(stdout.String(), "refs: 1") {
-		t.Fatalf("expected formatted snapshot output, got %q", stdout.String())
-	}
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"snapshot", "--form", "--text", "--full"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d", exitCode)
+		}
+		if !strings.Contains(stdout.String(), "refs: 1") {
+			t.Fatalf("expected formatted snapshot output, got %q", stdout.String())
+		}
+	})
+
+	t.Run("unfiltered full output requests verbose snapshot", func(t *testing.T) {
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "take_snapshot" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			if args["verbose"] != true {
+				t.Fatalf("expected verbose arg, got %#v", args)
+			}
+			return "## Latest page snapshot\nRootWebArea \"Example\"\n  uid=1 textbox \"Search\"\n", nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"snapshot", "--full"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d", exitCode)
+		}
+	})
 }
 
 func TestMainSnapshotRejectsUnexpectedArgs(t *testing.T) {
@@ -597,6 +621,55 @@ func TestMainScrollUsesNativeTool(t *testing.T) {
 	if !strings.Contains(stdout.String(), "snapshot:") {
 		t.Fatalf("expected snapshot output, got %q", stdout.String())
 	}
+}
+
+func TestMainScrollPrintsScrollMetricsWhenReturned(t *testing.T) {
+	restore := stubCallToolJSON(t, func(name string, args map[string]any) (json.RawMessage, error) {
+		switch name {
+		case "scroll_page":
+			if args["direction"] != "bottom" {
+				t.Fatalf("unexpected scroll_page args: %#v", args)
+			}
+			return mustJSON(t, map[string]any{
+				"message":   "scrolled bottom",
+				"direction": "bottom",
+				"scroll": map[string]any{
+					"y":              2880,
+					"maxScrollY":     2880,
+					"remainingY":     0,
+					"percentY":       100,
+					"scrollableY":    true,
+					"atTop":          false,
+					"atBottom":       true,
+					"viewportWidth":  1280,
+					"viewportHeight": 720,
+					"pageWidth":      1280,
+					"pageHeight":     3600,
+				},
+			}), nil
+		case "take_snapshot":
+			return mustJSON(t, "## Latest page snapshot\nRootWebArea \"Example\"\n"), nil
+		default:
+			t.Fatalf("unexpected tool %q with args %#v", name, args)
+			return nil, nil
+		}
+	})
+	defer restore()
+
+	var stdout bytes.Buffer
+	exitCode := Main([]string{"scroll", "bottom"}, &stdout, &bytes.Buffer{})
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	assertContainsAll(t, stdout.String(), []string{
+		"scroll:",
+		"status: scrolled bottom",
+		"percentY: 100",
+		"remainingY: 0",
+		"viewport: 1280x720",
+		"page: 1280x3600",
+		"snapshot:",
+	})
 }
 
 func TestMainMouseUsesRuntimeHTTPTools(t *testing.T) {
@@ -970,7 +1043,7 @@ func TestMainCommandHelp(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 	output := stdout.String()
-	if !strings.Contains(output, "usage: clawchrome-cli newpage <url> [--background] [--full]") {
+	if !strings.Contains(output, "usage: clawchrome-cli newpage <url> [--full]") || strings.Contains(output, "--background") {
 		t.Fatalf("unexpected help output: %q", output)
 	}
 }

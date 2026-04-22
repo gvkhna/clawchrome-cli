@@ -85,7 +85,7 @@ func Get(ctx Context) []string {
 		lines = append(lines, fmt.Sprintf("Run `clawchrome-cli click @%s` to click the %q link", link.Ref, link.Label))
 	}
 
-	if len(refs) > 5 {
+	if len(buttons)+len(links)+len(inputs) > 5 {
 		lines = append(lines, "Run `clawchrome-cli scroll down` to scroll down")
 	}
 

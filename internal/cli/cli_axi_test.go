@@ -135,6 +135,7 @@ func TestAXIValidationErrorsAreScopedAndDoNotCallBackend(t *testing.T) {
 		{"form upload missing path", []string{"form", "upload", "@1"}, "Missing file path", "usage: clawchrome-cli form"},
 		{"pages unexpected arg", []string{"pages", "extra"}, "Unexpected", "usage: clawchrome-cli pages"},
 		{"newpage missing url", []string{"newpage"}, "Missing URL", "usage: clawchrome-cli newpage"},
+		{"newpage background flag rejected", []string{"newpage", "https://example.com", "--background"}, "Unexpected", "usage: clawchrome-cli newpage"},
 		{"newpage unknown flag", []string{"newpage", "https://example.com", "--bogus"}, "Unexpected", "usage: clawchrome-cli newpage"},
 		{"selectpage invalid id", []string{"selectpage", "abc"}, "Invalid page ID", "usage: clawchrome-cli selectpage"},
 		{"selectpage negative id", []string{"selectpage", "-1"}, "Invalid page ID", "usage: clawchrome-cli selectpage"},

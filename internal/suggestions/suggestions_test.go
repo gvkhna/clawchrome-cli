@@ -42,6 +42,23 @@ func TestGetMatchesSupportedSurface(t *testing.T) {
 			t.Fatalf("did not expect eval tip, got %#v", got)
 		}
 	})
+
+	t.Run("open suggests actions from playwright refs", func(t *testing.T) {
+		snapshot := "- textbox \"Username\" [ref=e1]\n- button \"Sign In\" [ref=e2]\n- link \"Home\" [ref=e3]"
+		got := Get(Context{Command: "open", Snapshot: snapshot})
+		if !containsSuggestion(got, "fill @e1") {
+			t.Fatalf("expected fill suggestion, got %#v", got)
+		}
+		if !containsSuggestion(got, "click @e2") {
+			t.Fatalf("expected button suggestion, got %#v", got)
+		}
+		if !containsSuggestion(got, "click @e3") {
+			t.Fatalf("expected link suggestion, got %#v", got)
+		}
+		if containsSuggestion(got, "scroll down") {
+			t.Fatalf("did not expect scroll tip for small actionable surface, got %#v", got)
+		}
+	})
 }
 
 func containsSuggestion(lines []string, needle string) bool {

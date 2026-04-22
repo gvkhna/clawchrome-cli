@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -350,7 +351,7 @@ func handleSnapshot(args []string, full bool) (string, error) {
 	if parsed.text {
 		toolArgs["text"] = true
 	}
-	if full {
+	if full && !parsed.form && !parsed.text {
 		toolArgs["verbose"] = true
 	}
 
@@ -466,14 +467,83 @@ func handleScroll(args []string, full bool) (string, error) {
 		return "", validationError("scroll", "Unknown scroll direction: "+dir)
 	}
 
-	if _, err := callTool("scroll_page", map[string]any{"direction": dir}); err != nil {
+	scrollResult, err := callToolJSON("scroll_page", map[string]any{"direction": dir})
+	if err != nil {
 		return "", err
 	}
 	snap, err := callTool("take_snapshot", map[string]any{})
 	if err != nil {
 		return "", err
 	}
-	return formatPageOutput(snapshot.StripSnapshotHeader(snap), "scroll", "", full), nil
+	pageOutput := formatPageOutput(snapshot.StripSnapshotHeader(snap), "scroll", "", full)
+	if scrollOutput := formatScrollResult(scrollResult); scrollOutput != "" {
+		return joinBlocks(scrollOutput, pageOutput), nil
+	}
+	return pageOutput, nil
+}
+
+type scrollToolResult struct {
+	Message   string         `json:"message"`
+	Direction string         `json:"direction"`
+	Scroll    *scrollInfoDTO `json:"scroll"`
+}
+
+type scrollInfoDTO struct {
+	X              float64 `json:"x"`
+	Y              float64 `json:"y"`
+	ViewportWidth  int     `json:"viewportWidth"`
+	ViewportHeight int     `json:"viewportHeight"`
+	PageWidth      int     `json:"pageWidth"`
+	PageHeight     int     `json:"pageHeight"`
+	MaxScrollY     float64 `json:"maxScrollY"`
+	RemainingY     float64 `json:"remainingY"`
+	PercentY       float64 `json:"percentY"`
+	ScrollableY    bool    `json:"scrollableY"`
+	AtTop          bool    `json:"atTop"`
+	AtBottom       bool    `json:"atBottom"`
+	URL            string  `json:"url"`
+}
+
+func formatScrollResult(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" || raw[0] == '"' {
+		return ""
+	}
+	var result scrollToolResult
+	if err := json.Unmarshal(raw, &result); err != nil || result.Scroll == nil {
+		return ""
+	}
+	status := "scrolled"
+	if strings.TrimSpace(result.Direction) != "" {
+		status += " " + strings.TrimSpace(result.Direction)
+	}
+	scroll := map[string]any{
+		"status":      status,
+		"y":           roundedDisplayFloat(result.Scroll.Y),
+		"remainingY":  roundedDisplayFloat(result.Scroll.RemainingY),
+		"percentY":    roundedDisplayFloat(result.Scroll.PercentY),
+		"scrollableY": result.Scroll.ScrollableY,
+		"atTop":       result.Scroll.AtTop,
+		"atBottom":    result.Scroll.AtBottom,
+	}
+	if result.Scroll.MaxScrollY > 0 {
+		scroll["maxY"] = roundedDisplayFloat(result.Scroll.MaxScrollY)
+	}
+	if result.Scroll.ViewportWidth > 0 || result.Scroll.ViewportHeight > 0 {
+		scroll["viewport"] = fmt.Sprintf("%dx%d", result.Scroll.ViewportWidth, result.Scroll.ViewportHeight)
+	}
+	if result.Scroll.PageWidth > 0 || result.Scroll.PageHeight > 0 {
+		scroll["page"] = fmt.Sprintf("%dx%d", result.Scroll.PageWidth, result.Scroll.PageHeight)
+	}
+	return encode(map[string]any{"scroll": scroll})
+}
+
+func roundedDisplayFloat(value float64) any {
+	rounded := math.Round(value)
+	if math.Abs(value-rounded) < 0.01 {
+		return int(rounded)
+	}
+	return math.Round(value*10) / 10
 }
 
 func handleMouse(args []string) (string, error) {
@@ -934,29 +1004,20 @@ func handlePages(args []string) (string, error) {
 
 func handleNewPage(args []string, full bool) (string, error) {
 	var url string
-	background := false
 	for _, arg := range args {
-		switch arg {
-		case "--background":
-			background = true
-		default:
-			if strings.HasPrefix(arg, "-") {
-				return "", unexpectedArgError("newpage", arg)
-			}
-			if url != "" {
-				return "", unexpectedArgError("newpage", arg)
-			}
-			url = arg
+		if strings.HasPrefix(arg, "-") {
+			return "", unexpectedArgError("newpage", arg)
 		}
+		if url != "" {
+			return "", unexpectedArgError("newpage", arg)
+		}
+		url = arg
 	}
 	if url == "" {
 		return "", validationError("newpage", "Missing URL")
 	}
 
 	toolArgs := map[string]any{"url": url}
-	if background {
-		toolArgs["background"] = true
-	}
 	if _, err := callTool("new_page", toolArgs); err != nil {
 		return "", err
 	}

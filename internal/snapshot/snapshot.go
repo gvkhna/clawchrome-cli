@@ -19,21 +19,43 @@ type TruncationResult struct {
 }
 
 var (
-	refPattern       = regexp.MustCompile(`\buid=(\S+)\s+(\w+)\s+"([^"]*)"`)
-	rootTitlePattern = regexp.MustCompile(`RootWebArea\s+"([^"]+)"`)
-	headingPattern   = regexp.MustCompile(`\bheading\s+"([^"]+)"`)
+	legacyRefPattern     = regexp.MustCompile(`\buid=(\S+)\s+([\w-]+)\s+"([^"]*)"`)
+	playwrightRefPattern = regexp.MustCompile(`^\s*-\s+([\w-]+)(?:\s+"([^"]*)")?.*?\[ref=([^]]+)\](?::\s*(.*))?`)
+	refTokenPattern      = regexp.MustCompile(`\buid=([^\s]+)|\[ref=([^]]+)\]`)
+	rootTitlePattern     = regexp.MustCompile(`RootWebArea\s+"([^"]+)"`)
+	headingPattern       = regexp.MustCompile(`\bheading\s+"([^"]+)"`)
 )
 
 func CountRefs(text string) int {
-	return strings.Count(text, "uid=")
+	matches := refTokenPattern.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		ref := ""
+		if len(match) > 1 && match[1] != "" {
+			ref = match[1]
+		}
+		if len(match) > 2 && match[2] != "" {
+			ref = match[2]
+		}
+		if ref != "" {
+			seen[ref] = struct{}{}
+		}
+	}
+	return len(seen)
 }
 
 func ExtractRefs(text string) []RefInfo {
 	lines := strings.Split(text, "\n")
 	refs := make([]RefInfo, 0)
 	for _, line := range lines {
-		matches := refPattern.FindStringSubmatch(line)
+		matches := legacyRefPattern.FindStringSubmatch(line)
 		if len(matches) != 4 {
+			if current := extractPlaywrightRef(line); current.Ref != "" {
+				refs = append(refs, current)
+			}
 			continue
 		}
 		refs = append(refs, RefInfo{
@@ -43,6 +65,22 @@ func ExtractRefs(text string) []RefInfo {
 		})
 	}
 	return refs
+}
+
+func extractPlaywrightRef(line string) RefInfo {
+	matches := playwrightRefPattern.FindStringSubmatch(line)
+	if len(matches) != 5 {
+		return RefInfo{}
+	}
+	label := strings.TrimSpace(matches[2])
+	if label == "" {
+		label = strings.TrimSpace(matches[4])
+	}
+	return RefInfo{
+		Ref:   strings.TrimSpace(matches[3]),
+		Type:  strings.TrimSpace(matches[1]),
+		Label: label,
+	}
 }
 
 func ExtractTitle(text string) string {
@@ -56,13 +94,30 @@ func ExtractTitle(text string) string {
 }
 
 func StripSnapshotHeader(text string) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "## Latest page snapshot\n", ""))
+	if fenced := fencedYAML(text); fenced != "" {
+		text = fenced
+	}
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
-		if strings.Contains(line, "RootWebArea") || strings.Contains(line, "uid=") {
-			return strings.Join(lines[i:], "\n")
+		if strings.Contains(line, "RootWebArea") || strings.Contains(line, "uid=") || strings.Contains(line, "[ref=") {
+			return strings.TrimSpace(strings.Join(lines[i:], "\n"))
 		}
 	}
-	return strings.TrimSpace(strings.ReplaceAll(text, "## Latest page snapshot\n", ""))
+	return strings.TrimSpace(text)
+}
+
+func fencedYAML(text string) string {
+	const marker = "```yaml"
+	idx := strings.Index(text, marker)
+	if idx < 0 {
+		return ""
+	}
+	after := strings.TrimLeft(text[idx+len(marker):], "\n")
+	if end := strings.Index(after, "\n```"); end >= 0 {
+		return strings.TrimSpace(after[:end])
+	}
+	return strings.TrimSpace(after)
 }
 
 func TruncateSnapshot(text string, full bool, limit int) TruncationResult {
