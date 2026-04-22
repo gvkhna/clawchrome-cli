@@ -21,6 +21,9 @@ flags:
   --help, -v, -V, --version, --full
 
 environment:
+  CLAWCHROME_CLI_TRANSPORT=stdio   Transport mode: stdio (default) or http
+  CLAWCHROME_CLI_HTTP_URL=...      Target runtime API URL when transport is http
+  CLAWCHROME_CLI_HTTP_BEARER_TOKEN Auth bearer token when transport is http
   CLAWCHROME_CLI_HEADED=1          Run Chrome headed instead of headless
   CLAWCHROME_CLI_CHROME_ARGS=...   Forward additional Chrome flags
   CLAWCHROME_CLI_PORT=9224         Override bridge server port
@@ -147,11 +150,15 @@ args:
 examples:
   clawchrome-cli wait 2000
   clawchrome-cli wait "Submit"`,
-	"start": `usage: clawchrome-cli start
+	"start": `usage: clawchrome-cli start [url]
 Start the bridge server (launches headless Chrome).
 
+args:
+  [url]  Optional URL to open when using the http runtime transport
+
 examples:
-  clawchrome-cli start`,
+  clawchrome-cli start
+  clawchrome-cli start https://example.com`,
 	"stop": `usage: clawchrome-cli stop
 Stop the bridge server and close the browser.
 
@@ -327,6 +334,7 @@ type screenshotArgs struct {
 	uid      string
 	fullPage bool
 	format   string
+	invalid  string
 }
 
 type ScreenshotArgs struct {
@@ -350,6 +358,7 @@ type pageInfo struct {
 
 type fillFormArgs struct {
 	entries []map[string]string
+	invalid string
 }
 
 type snapshotArgs struct {
@@ -416,13 +425,49 @@ func ParseScreenshotArgs(args []string) ScreenshotArgs {
 }
 
 func parseScreenshotArgs(args []string) screenshotArgs {
-	parsed := ParseScreenshotArgs(args)
-	return screenshotArgs{
-		filePath: parsed.FilePath,
-		uid:      parsed.UID,
-		fullPage: parsed.FullPage,
-		format:   parsed.Format,
+	var parsed screenshotArgs
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--uid":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				parsed.invalid = "Missing value for --uid"
+				return parsed
+			}
+			uid, err := validateRefArg("screenshot", args[i+1])
+			if err != nil {
+				parsed.invalid = "Invalid element ref: expected a snapshot ref such as @1"
+				return parsed
+			}
+			parsed.uid = uid
+			i++
+		case "--full-page":
+			parsed.fullPage = true
+		case "--format":
+			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				parsed.invalid = "Missing value for --format"
+				return parsed
+			}
+			switch args[i+1] {
+			case "png", "jpeg", "webp":
+				parsed.format = args[i+1]
+				i++
+			default:
+				parsed.invalid = "Invalid screenshot format: " + args[i+1]
+				return parsed
+			}
+		default:
+			if strings.HasPrefix(args[i], "-") {
+				parsed.invalid = "Unexpected flag: " + args[i]
+				return parsed
+			}
+			if parsed.filePath != "" {
+				parsed.invalid = "Unexpected argument: " + args[i]
+				return parsed
+			}
+			parsed.filePath = args[i]
+		}
 	}
+	return parsed
 }
 
 func parseSnapshotArgs(args []string) snapshotArgs {
@@ -514,12 +559,18 @@ func parseFillFormArgs(args []string) fillFormArgs {
 		if arg == "--full" {
 			continue
 		}
+		if strings.HasPrefix(arg, "-") {
+			return fillFormArgs{invalid: "Unexpected flag: " + arg}
+		}
 		if !strings.HasPrefix(arg, "@") {
-			continue
+			return fillFormArgs{invalid: "No valid field entries"}
 		}
 		parts := strings.SplitN(arg[1:], "=", 2)
 		if len(parts) != 2 {
-			continue
+			return fillFormArgs{invalid: "Invalid fillform entry: " + arg}
+		}
+		if _, err := validateRefArg("fillform", "@"+parts[0]); err != nil {
+			return fillFormArgs{invalid: "Invalid element ref: expected a snapshot ref such as @1"}
 		}
 		value := parts[1]
 		if len(value) >= 2 {

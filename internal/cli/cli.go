@@ -30,7 +30,10 @@ var (
 	}
 )
 
-var recoverableOpenErrorPattern = regexp.MustCompile(`(?i)not connected|session (?:closed|not found)|no page`)
+var (
+	recoverableOpenErrorPattern = regexp.MustCompile(`(?i)not connected|session (?:closed|not found)|no page`)
+	refArgPattern               = regexp.MustCompile(`^@[A-Za-z0-9][A-Za-z0-9_-]*$`)
+)
 
 func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 || (len(args) == 1 && args[0] == "--full") {
@@ -42,7 +45,7 @@ func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	if len(args) == 1 {
 		switch args[0] {
-		case "--help":
+		case "-h", "--help":
 			_, _ = io.WriteString(stdout, topHelp)
 			return 0
 		case "version":
@@ -54,7 +57,7 @@ func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 	}
 
-	if len(args) >= 2 && args[1] == "--help" {
+	if len(args) >= 2 && hasHelpArg(args[1:]) {
 		if help := getCommandHelp(args[0]); help != "" {
 			_, _ = io.WriteString(stdout, help+"\n")
 			return 0
@@ -66,9 +69,14 @@ func Main(args []string, stdout io.Writer, stderr io.Writer) int {
 	command := args[0]
 	commandArgs, full := splitFullFlag(args[1:])
 
+	if full && command != "" && getCommandHelp(command) != "" && !CommandSupportsFullFlag(command) {
+		_, _ = io.WriteString(stdout, renderCommandError(command, validationError(command, "Unexpected flag: --full"))+"\n")
+		return 2
+	}
+
 	output, err := runCommand(command, commandArgs, full)
 	if err != nil {
-		_, _ = io.WriteString(stdout, renderError(err)+"\n")
+		_, _ = io.WriteString(stdout, renderCommandError(command, err)+"\n")
 		return exitCode(err)
 	}
 	_, _ = io.WriteString(stdout, output+"\n")
@@ -85,7 +93,7 @@ func runCommand(command string, args []string, full bool) (string, error) {
 	case "screenshot":
 		return handleScreenshot(args)
 	case "click":
-		return handleSnapshotCommand("click", args, full, "Run `clawchrome-cli click @<uid>` — get uid from snapshot")
+		return handleSnapshotCommand("click", args, full)
 	case "fill":
 		return handleFill(args, full)
 	case "type":
@@ -95,11 +103,11 @@ func runCommand(command string, args []string, full bool) (string, error) {
 	case "scroll":
 		return handleScroll(args, full)
 	case "back":
-		return handleBack(full)
+		return handleBack(args, full)
 	case "wait":
 		return handleWait(args)
 	case "hover":
-		return handleSnapshotCommand("hover", args, full, "Run `clawchrome-cli hover @<uid>` — get uid from snapshot")
+		return handleSnapshotCommand("hover", args, full)
 	case "drag":
 		return handleDrag(args, full)
 	case "fillform":
@@ -109,7 +117,7 @@ func runCommand(command string, args []string, full bool) (string, error) {
 	case "upload":
 		return handleUpload(args, full)
 	case "pages":
-		return handlePages()
+		return handlePages(args)
 	case "newpage":
 		return handleNewPage(args, full)
 	case "selectpage":
@@ -121,9 +129,9 @@ func runCommand(command string, args []string, full bool) (string, error) {
 	case "start":
 		return handleStart(args)
 	case "stop":
-		return encode(map[string]any{"status": stopText(stopBridge())}), nil
+		return handleStop(args)
 	case "version":
-		return Version, nil
+		return handleVersion(args)
 	case "self-update":
 		return handleSelfUpdate(args)
 	case "--help":
@@ -157,13 +165,25 @@ func renderHome() string {
 }
 
 func handleStart(args []string) (string, error) {
+	var url string
+	switch len(args) {
+	case 0:
+	case 1:
+		if strings.HasPrefix(args[0], "-") {
+			return "", unexpectedArgError("start", args[0])
+		}
+		url = args[0]
+	default:
+		return "", unexpectedArgError("start", args[1])
+	}
+
 	port, err := ensureBridge()
 	if err != nil {
 		return "", err
 	}
 	if usesHTTPTransport() {
 		toolArgs := map[string]any{}
-		if url := firstPositionalArg(args); url != "" {
+		if url != "" {
 			toolArgs["url"] = url
 		}
 		if _, err := callTool("start_browser", toolArgs); err != nil {
@@ -174,10 +194,16 @@ func handleStart(args []string) (string, error) {
 }
 
 func handleOpen(args []string, full bool) (string, error) {
-	url := firstPositionalArg(args)
-	if url == "" {
-		return "", client.WrapError("Missing URL", client.ErrValidation, "Run `clawchrome-cli open https://example.com` to navigate to a page")
+	if len(args) == 0 {
+		return "", validationError("open", "Missing URL")
 	}
+	if strings.HasPrefix(args[0], "-") {
+		return "", unexpectedArgError("open", args[0])
+	}
+	if len(args) > 1 {
+		return "", unexpectedArgError("open", args[1])
+	}
+	url := args[0]
 
 	if _, err := callTool("navigate_page", map[string]any{"type": "url", "url": url}); err != nil {
 		if !isRecoverableOpenError(err) {
@@ -198,7 +224,7 @@ func handleOpen(args []string, full bool) (string, error) {
 func handleSnapshot(args []string, full bool) (string, error) {
 	parsed := parseSnapshotArgs(args)
 	if parsed.invalid != "" {
-		return "", client.WrapError("Unexpected snapshot argument: "+parsed.invalid, client.ErrValidation, "Run `clawchrome-cli snapshot --help` to see supported flags")
+		return "", validationError("snapshot", "Unexpected snapshot argument: "+parsed.invalid)
 	}
 
 	toolArgs := map[string]any{}
@@ -221,8 +247,11 @@ func handleSnapshot(args []string, full bool) (string, error) {
 
 func handleScreenshot(args []string) (string, error) {
 	parsed := parseScreenshotArgs(args)
+	if parsed.invalid != "" {
+		return "", validationError("screenshot", parsed.invalid)
+	}
 	if parsed.filePath == "" {
-		return "", client.WrapError("Missing file path", client.ErrValidation, "Run `clawchrome-cli screenshot ./page.png` to save a screenshot")
+		return "", validationError("screenshot", "Missing file path")
 	}
 
 	toolArgs := map[string]any{"filePath": parsed.filePath}
@@ -243,17 +272,19 @@ func handleScreenshot(args []string) (string, error) {
 }
 
 func handleFill(args []string, full bool) (string, error) {
-	uid := firstPositionalArg(args)
-	if uid == "" {
-		return "", client.WrapError("Missing element ref", client.ErrValidation, "Run `clawchrome-cli fill @<uid> \"text\"` to fill the field")
+	if len(args) == 0 {
+		return "", validationError("fill", "Missing element ref")
 	}
-
+	uid, err := validateRefArg("fill", args[0])
+	if err != nil {
+		return "", err
+	}
 	value := strings.Join(args[1:], " ")
 	if value == "" {
-		return "", client.WrapError("Missing fill text", client.ErrValidation, "Run `clawchrome-cli fill @<uid> \"text\"` to fill the field")
+		return "", validationError("fill", "Missing fill text")
 	}
 
-	snap, err := callWithSnapshot("fill", map[string]any{"uid": parseUID(uid), "value": value})
+	snap, err := callWithSnapshot("fill", map[string]any{"uid": uid, "value": value})
 	if err != nil {
 		return "", err
 	}
@@ -263,7 +294,7 @@ func handleFill(args []string, full bool) (string, error) {
 func handleType(args []string, full bool) (string, error) {
 	text := strings.Join(args, " ")
 	if text == "" {
-		return "", client.WrapError("Missing text", client.ErrValidation, "Run `clawchrome-cli type \"hello\"` to type text")
+		return "", validationError("type", "Missing text")
 	}
 
 	if _, err := callTool("type_text", map[string]any{"text": text}); err != nil {
@@ -277,10 +308,16 @@ func handleType(args []string, full bool) (string, error) {
 }
 
 func handlePress(args []string, full bool) (string, error) {
-	key := firstPositionalArg(args)
-	if key == "" {
-		return "", client.WrapError("Missing key name", client.ErrValidation, "Run `clawchrome-cli press Enter` to press a key")
+	if len(args) == 0 {
+		return "", validationError("press", "Missing key name")
 	}
+	if len(args) > 1 {
+		return "", unexpectedArgError("press", args[1])
+	}
+	if strings.HasPrefix(args[0], "-") {
+		return "", unexpectedArgError("press", args[0])
+	}
+	key := args[0]
 
 	snap, err := callWithSnapshot("press_key", map[string]any{"key": key})
 	if err != nil {
@@ -290,6 +327,12 @@ func handlePress(args []string, full bool) (string, error) {
 }
 
 func handleScroll(args []string, full bool) (string, error) {
+	if len(args) > 1 {
+		return "", unexpectedArgError("scroll", args[1])
+	}
+	if len(args) == 1 && strings.HasPrefix(args[0], "-") {
+		return "", unexpectedArgError("scroll", args[0])
+	}
 	dir := strings.ToLower(firstPositionalArg(args))
 	if dir == "" {
 		dir = "down"
@@ -298,7 +341,7 @@ func handleScroll(args []string, full bool) (string, error) {
 	switch dir {
 	case "up", "down", "top", "bottom":
 	default:
-		return "", client.WrapError("Unknown scroll direction: "+dir, client.ErrValidation, "Run `clawchrome-cli scroll down` - directions: up, down, top, bottom")
+		return "", validationError("scroll", "Unknown scroll direction: "+dir)
 	}
 
 	if _, err := callTool("scroll_page", map[string]any{"direction": dir}); err != nil {
@@ -311,7 +354,10 @@ func handleScroll(args []string, full bool) (string, error) {
 	return formatPageOutput(snapshot.StripSnapshotHeader(snap), "scroll", "", full), nil
 }
 
-func handleBack(full bool) (string, error) {
+func handleBack(args []string, full bool) (string, error) {
+	if err := requireNoArgs("back", args); err != nil {
+		return "", err
+	}
 	if _, err := callTool("navigate_page", map[string]any{"type": "back"}); err != nil {
 		return "", err
 	}
@@ -323,20 +369,15 @@ func handleBack(full bool) (string, error) {
 }
 
 func handleWait(args []string) (string, error) {
-	target := firstPositionalArg(args)
+	target := strings.Join(args, " ")
 	if target == "" {
-		return "", client.WrapError(
-			"Missing wait target (milliseconds or text)",
-			client.ErrValidation,
-			"Run `clawchrome-cli wait 2000` to wait 2 seconds",
-			"Run `clawchrome-cli wait \"Submit\"` to wait for text to appear",
-		)
+		return "", validationError("wait", "Missing wait target (milliseconds or text)")
 	}
 
 	if isDigits(target) {
 		ms, err := strconv.Atoi(target)
 		if err != nil {
-			return "", client.WrapError("Invalid wait duration: "+target, client.ErrValidation, "Run `clawchrome-cli wait 2000` to wait 2 seconds")
+			return "", validationError("wait", "Invalid wait duration: "+target)
 		}
 		if _, err := callTool("wait_duration", map[string]any{"milliseconds": ms}); err != nil {
 			return "", err
@@ -355,10 +396,21 @@ func handleWait(args []string) (string, error) {
 
 func handleDrag(args []string, full bool) (string, error) {
 	if len(args) < 2 {
-		return "", client.WrapError("Missing element refs", client.ErrValidation, "Run `clawchrome-cli drag @<from> @<to>` — get uids from snapshot")
+		return "", validationError("drag", "Missing element refs")
+	}
+	if len(args) > 2 {
+		return "", unexpectedArgError("drag", args[2])
+	}
+	fromUID, err := validateRefArg("drag", args[0])
+	if err != nil {
+		return "", err
+	}
+	toUID, err := validateRefArg("drag", args[1])
+	if err != nil {
+		return "", err
 	}
 
-	snap, err := callWithSnapshot("drag", map[string]any{"from_uid": parseUID(args[0]), "to_uid": parseUID(args[1])})
+	snap, err := callWithSnapshot("drag", map[string]any{"from_uid": fromUID, "to_uid": toUID})
 	if err != nil {
 		return "", err
 	}
@@ -367,8 +419,11 @@ func handleDrag(args []string, full bool) (string, error) {
 
 func handleFillForm(args []string, full bool) (string, error) {
 	parsed := parseFillFormArgs(args)
+	if parsed.invalid != "" {
+		return "", validationError("fillform", parsed.invalid)
+	}
 	if len(parsed.entries) == 0 {
-		return "", client.WrapError("No valid field entries", client.ErrValidation, "Run `clawchrome-cli fillform @1=\"hello\" @2=\"world\"` to fill multiple fields")
+		return "", validationError("fillform", "No valid field entries")
 	}
 
 	snap, err := callWithSnapshot("fill_form", map[string]any{"elements": parsed.entries})
@@ -379,9 +434,12 @@ func handleFillForm(args []string, full bool) (string, error) {
 }
 
 func handleDialog(args []string) (string, error) {
-	action := firstPositionalArg(args)
+	if len(args) == 0 {
+		return "", validationError("dialog", "Missing or invalid action")
+	}
+	action := args[0]
 	if action == "" || (action != "accept" && action != "dismiss") {
-		return "", client.WrapError("Missing or invalid action", client.ErrValidation, "Run `clawchrome-cli dialog accept` or `clawchrome-cli dialog dismiss`")
+		return "", validationError("dialog", "Missing or invalid action")
 	}
 
 	params := map[string]any{"action": action}
@@ -395,22 +453,31 @@ func handleDialog(args []string) (string, error) {
 }
 
 func handleUpload(args []string, full bool) (string, error) {
-	uid := firstPositionalArg(args)
-	if uid == "" {
-		return "", client.WrapError("Missing element ref", client.ErrValidation, "Run `clawchrome-cli upload @<uid> <path>` — get uid from snapshot")
+	if len(args) == 0 {
+		return "", validationError("upload", "Missing element ref")
 	}
 	if len(args) < 2 || args[1] == "" {
-		return "", client.WrapError("Missing file path", client.ErrValidation, "Run `clawchrome-cli upload @<uid> /path/to/file` to upload a file")
+		return "", validationError("upload", "Missing file path")
+	}
+	if len(args) > 2 {
+		return "", unexpectedArgError("upload", args[2])
+	}
+	uid, err := validateRefArg("upload", args[0])
+	if err != nil {
+		return "", err
 	}
 
-	snap, err := callWithSnapshot("upload_file", map[string]any{"uid": parseUID(uid), "filePath": args[1]})
+	snap, err := callWithSnapshot("upload_file", map[string]any{"uid": uid, "filePath": args[1]})
 	if err != nil {
 		return "", err
 	}
 	return formatPageOutput(snap, "upload", "", full), nil
 }
 
-func handlePages() (string, error) {
+func handlePages(args []string) (string, error) {
+	if err := requireNoArgs("pages", args); err != nil {
+		return "", err
+	}
 	result, err := callTool("list_pages", map[string]any{})
 	if err != nil {
 		return "", err
@@ -435,13 +502,28 @@ func handlePages() (string, error) {
 }
 
 func handleNewPage(args []string, full bool) (string, error) {
-	url := firstPositionalArg(args)
+	var url string
+	background := false
+	for _, arg := range args {
+		switch arg {
+		case "--background":
+			background = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				return "", unexpectedArgError("newpage", arg)
+			}
+			if url != "" {
+				return "", unexpectedArgError("newpage", arg)
+			}
+			url = arg
+		}
+	}
 	if url == "" {
-		return "", client.WrapError("Missing URL", client.ErrValidation, "Run `clawchrome-cli newpage https://example.com` to open a new tab")
+		return "", validationError("newpage", "Missing URL")
 	}
 
 	toolArgs := map[string]any{"url": url}
-	if hasArg(args, "--background") {
+	if background {
 		toolArgs["background"] = true
 	}
 	if _, err := callTool("new_page", toolArgs); err != nil {
@@ -456,14 +538,17 @@ func handleNewPage(args []string, full bool) (string, error) {
 }
 
 func handleSelectPage(args []string, full bool) (string, error) {
-	id := firstPositionalArg(args)
-	if id == "" {
-		return "", client.WrapError("Missing page ID", client.ErrValidation, "Run `clawchrome-cli selectpage <id>` — get ID from `pages` command")
+	if len(args) == 0 {
+		return "", validationError("selectpage", "Missing page ID")
 	}
+	if len(args) > 1 {
+		return "", unexpectedArgError("selectpage", args[1])
+	}
+	id := args[0]
 
 	pageID, err := strconv.Atoi(id)
-	if err != nil {
-		return "", client.WrapError("Invalid page ID: "+id, client.ErrValidation, "Run `clawchrome-cli pages` to list available page IDs")
+	if err != nil || pageID < 0 {
+		return "", validationError("selectpage", "Invalid page ID: "+id)
 	}
 
 	if _, err := callTool("select_page", map[string]any{"pageId": pageID}); err != nil {
@@ -477,14 +562,17 @@ func handleSelectPage(args []string, full bool) (string, error) {
 }
 
 func handleClosePage(args []string) (string, error) {
-	id := firstPositionalArg(args)
-	if id == "" {
-		return "", client.WrapError("Missing page ID", client.ErrValidation, "Run `clawchrome-cli closepage <id>` — get ID from `pages` command")
+	if len(args) == 0 {
+		return "", validationError("closepage", "Missing page ID")
 	}
+	if len(args) > 1 {
+		return "", unexpectedArgError("closepage", args[1])
+	}
+	id := args[0]
 
 	pageID, err := strconv.Atoi(id)
-	if err != nil {
-		return "", client.WrapError("Invalid page ID: "+id, client.ErrValidation, "Run `clawchrome-cli pages` to list available page IDs")
+	if err != nil || pageID < 0 {
+		return "", validationError("closepage", "Invalid page ID: "+id)
 	}
 
 	before, err := callTool("list_pages", map[string]any{})
@@ -509,13 +597,19 @@ func handleClosePage(args []string) (string, error) {
 
 func handleResize(args []string) (string, error) {
 	if len(args) < 2 {
-		return "", client.WrapError("Missing width and/or height", client.ErrValidation, "Run `clawchrome-cli resize 1280 720` to resize the viewport")
+		return "", validationError("resize", "Missing width and/or height")
+	}
+	if len(args) > 2 {
+		return "", unexpectedArgError("resize", args[2])
 	}
 
 	width, widthErr := strconv.Atoi(args[0])
 	height, heightErr := strconv.Atoi(args[1])
 	if widthErr != nil || heightErr != nil {
-		return "", client.WrapError("Width and height must be numbers", client.ErrValidation, "Run `clawchrome-cli resize 1280 720` to resize the viewport")
+		return "", validationError("resize", "Width and height must be numbers")
+	}
+	if width <= 0 || height <= 0 {
+		return "", validationError("resize", "Width and height must be positive numbers")
 	}
 
 	if _, err := callTool("resize_page", map[string]any{"width": width, "height": height}); err != nil {
@@ -525,6 +619,12 @@ func handleResize(args []string) (string, error) {
 }
 
 func handleSelfUpdate(args []string) (string, error) {
+	if len(args) > 1 {
+		return "", unexpectedArgError("self-update", args[1])
+	}
+	if len(args) == 1 && strings.HasPrefix(args[0], "-") {
+		return "", unexpectedArgError("self-update", args[0])
+	}
 	targetVersion := firstPositionalArg(args)
 	version, err := selfUpdate(Version, targetVersion)
 	if err != nil {
@@ -536,13 +636,33 @@ func handleSelfUpdate(args []string) (string, error) {
 	}), nil
 }
 
-func handleSnapshotCommand(command string, args []string, full bool, missingRefHelp string) (string, error) {
-	uid := firstPositionalArg(args)
-	if uid == "" {
-		return "", client.WrapError("Missing element ref", client.ErrValidation, missingRefHelp)
+func handleStop(args []string) (string, error) {
+	if err := requireNoArgs("stop", args); err != nil {
+		return "", err
+	}
+	return encode(map[string]any{"status": stopText(stopBridge())}), nil
+}
+
+func handleVersion(args []string) (string, error) {
+	if err := requireNoArgs("version", args); err != nil {
+		return "", err
+	}
+	return Version, nil
+}
+
+func handleSnapshotCommand(command string, args []string, full bool) (string, error) {
+	if len(args) == 0 {
+		return "", validationError(command, "Missing element ref")
+	}
+	if len(args) > 1 {
+		return "", unexpectedArgError(command, args[1])
+	}
+	uid, err := validateRefArg(command, args[0])
+	if err != nil {
+		return "", err
 	}
 
-	snap, err := callWithSnapshot(command, map[string]any{"uid": parseUID(uid)})
+	snap, err := callWithSnapshot(command, map[string]any{"uid": uid})
 	if err != nil {
 		return "", err
 	}
@@ -598,11 +718,63 @@ func stopText(stopped bool) string {
 func renderError(err error) string {
 	if cdpErr, ok := err.(*client.CdpError); ok {
 		return joinBlocks(
-			encode(map[string]any{"error": cdpErr.Message, "code": cdpErr.Code}),
+			encode(map[string]any{"error": cdpErr.Message, "code": string(cdpErr.Code)}),
 			renderHelp(cdpErr.Suggestions),
 		)
 	}
-	return encode(map[string]any{"error": err.Error(), "code": client.ErrUnknown})
+	return encode(map[string]any{"error": err.Error(), "code": string(client.ErrUnknown)})
+}
+
+func renderCommandError(command string, err error) string {
+	if cdpErr, ok := err.(*client.CdpError); ok {
+		blocks := []string{encode(map[string]any{"error": cdpErr.Message, "code": string(cdpErr.Code)})}
+		if cdpErr.Code == client.ErrValidation {
+			if help := getCommandHelp(command); help != "" {
+				blocks = append(blocks, help)
+			}
+		}
+		blocks = append(blocks, renderHelp(cdpErr.Suggestions))
+		return joinBlocks(blocks...)
+	}
+	return renderError(err)
+}
+
+func validationError(command string, message string, suggestions ...string) error {
+	return client.WrapError(message, client.ErrValidation, suggestions...)
+}
+
+func unexpectedArgError(command string, arg string) error {
+	if strings.HasPrefix(arg, "-") {
+		return validationError(command, "Unexpected flag: "+arg)
+	}
+	return validationError(command, "Unexpected argument: "+arg)
+}
+
+func requireNoArgs(command string, args []string) error {
+	if len(args) > 0 {
+		return unexpectedArgError(command, args[0])
+	}
+	return nil
+}
+
+func validateRefArg(command string, ref string) (string, error) {
+	if !refArgPattern.MatchString(ref) {
+		return "", validationError(command, "Invalid element ref: expected a snapshot ref such as @1")
+	}
+	return parseUID(ref), nil
+}
+
+func isHelpArg(arg string) bool {
+	return arg == "-h" || arg == "--help"
+}
+
+func hasHelpArg(args []string) bool {
+	for _, arg := range args {
+		if isHelpArg(arg) {
+			return true
+		}
+	}
+	return false
 }
 
 func exitCode(err error) int {
@@ -638,15 +810,6 @@ func firstPositionalArg(args []string) string {
 		return args[i]
 	}
 	return ""
-}
-
-func hasArg(args []string, target string) bool {
-	for _, arg := range args {
-		if arg == target {
-			return true
-		}
-	}
-	return false
 }
 
 func isDigits(text string) bool {

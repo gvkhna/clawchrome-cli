@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ const (
 	ErrRefNotFound    ErrorCode = "REF_NOT_FOUND"
 	ErrTimeout        ErrorCode = "TIMEOUT"
 	ErrBrowser        ErrorCode = "BROWSER_ERROR"
+	ErrAuth           ErrorCode = "AUTH_ERROR"
 	ErrValidation     ErrorCode = "VALIDATION_ERROR"
 	ErrUnknown        ErrorCode = "UNKNOWN"
 )
@@ -67,6 +69,8 @@ type transportConfig struct {
 	baseURL     string
 	bearerToken string
 }
+
+var uidRefPattern = regexp.MustCompile(`(?i)\buid[=:\s]+@?([A-Za-z0-9_-]+)`)
 
 func (e *CdpError) Error() string { return e.Message }
 
@@ -177,21 +181,111 @@ func WrapError(message string, code ErrorCode, suggestions ...string) error {
 }
 
 func mapError(message string) error {
+	interpreted := extractErrorPayload(message)
+	combined := strings.TrimSpace(message + "\n" + interpreted)
+	lower := strings.ToLower(combined)
+
 	switch {
-	case bytes.Contains([]byte(message), []byte("ECONNREFUSED")), bytes.Contains([]byte(message), []byte("ECONNRESET")):
-		return &CdpError{Message: "Bridge is not running", Code: ErrBridgeNotReady, Suggestions: []string{"Run `clawchrome-cli open <url>` to start the bridge automatically"}}
-	case bytes.Contains([]byte(message), []byte("uid")) || bytes.Contains([]byte(message), []byte("element")):
-		return &CdpError{Message: message, Code: ErrRefNotFound, Suggestions: []string{"Run `clawchrome-cli snapshot` to see available @uid refs"}}
-	case bytes.Contains([]byte(message), []byte("timeout")):
-		return &CdpError{Message: message, Code: ErrTimeout, Suggestions: []string{"Run `clawchrome-cli snapshot` to see current page state"}}
+	case strings.Contains(lower, "http 401"), strings.Contains(lower, "http 403"), strings.Contains(lower, "unauthorized"), strings.Contains(lower, "forbidden"):
+		return &CdpError{
+			Message: "target API auth failed. Check CLAWCHROME_CLI_HTTP_BEARER_TOKEN.",
+			Code:    ErrAuth,
+			Suggestions: []string{
+				"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN to a token accepted by the target runtime API",
+			},
+		}
+	case strings.Contains(lower, "econnrefused"), strings.Contains(lower, "econnreset"), strings.Contains(lower, "connection refused"), strings.Contains(lower, "no such host"):
+		return &CdpError{
+			Message: "target API is unreachable. Check CLAWCHROME_CLI_HTTP_URL and that the runtime is running.",
+			Code:    ErrBridgeNotReady,
+		}
+	case strings.Contains(lower, "uid") || strings.Contains(lower, "element"):
+		ref := extractRef(combined)
+		if ref == "" {
+			return &CdpError{
+				Message: "No element matched the provided ref in the current snapshot.",
+				Code:    ErrRefNotFound,
+				Suggestions: []string{
+					"Run `clawchrome-cli snapshot` to see available element refs",
+					"Use refs exactly as shown, for example `@1`",
+				},
+			}
+		}
+		return &CdpError{
+			Message: "No element with ref " + ref + " was found in the current snapshot.",
+			Code:    ErrRefNotFound,
+			Suggestions: []string{
+				"Run `clawchrome-cli snapshot` to see available element refs",
+				"Use refs exactly as shown, for example `@1`",
+			},
+		}
+	case strings.Contains(lower, "timeout"):
+		return &CdpError{Message: "Timed out waiting for the browser runtime.", Code: ErrTimeout, Suggestions: []string{"Run `clawchrome-cli snapshot` to see current page state"}}
 	default:
+		if interpreted != "" {
+			return &CdpError{Message: interpreted, Code: ErrBrowser, Suggestions: []string{"Run `clawchrome-cli snapshot` to see current page state"}}
+		}
+		return &CdpError{Message: message, Code: ErrUnknown}
+	}
+}
+
+func extractErrorPayload(message string) string {
+	for _, candidate := range []string{message, jsonSubstring(message)} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
 		var payload struct {
 			Error string `json:"error"`
 		}
-		if json.Unmarshal([]byte(message), &payload) == nil && payload.Error != "" {
-			return &CdpError{Message: payload.Error, Code: ErrBrowser, Suggestions: []string{"Run `clawchrome-cli snapshot` to see current page state"}}
+		if json.Unmarshal([]byte(candidate), &payload) == nil && payload.Error != "" {
+			return payload.Error
 		}
-		return &CdpError{Message: message, Code: ErrUnknown}
+	}
+	return ""
+}
+
+func jsonSubstring(message string) string {
+	start := strings.Index(message, "{")
+	if start < 0 {
+		return ""
+	}
+	return message[start:]
+}
+
+func extractRef(message string) string {
+	if match := uidRefPattern.FindStringSubmatch(message); len(match) == 2 && match[1] != "" {
+		return "@" + strings.TrimPrefix(match[1], "@")
+	}
+	for _, field := range strings.Fields(message) {
+		field = strings.Trim(field, `"'.,;:()[]{}<>`)
+		if strings.HasPrefix(field, "@") && len(field) > 1 {
+			return field
+		}
+	}
+	return ""
+}
+
+func transportSetupErrorMessage(err error) string {
+	if err == nil {
+		return "target API is unreachable. Check CLAWCHROME_CLI_HTTP_URL and that the runtime is running."
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "auth") || strings.Contains(lower, "permission") || strings.Contains(lower, "401") || strings.Contains(lower, "403") {
+		return "target API auth failed. Check CLAWCHROME_CLI_HTTP_BEARER_TOKEN."
+	}
+	return "target API is unreachable. Check CLAWCHROME_CLI_HTTP_URL and that the runtime is running."
+}
+
+func httpStatusMessage(status int, body []byte) string {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "target API auth failed. Check CLAWCHROME_CLI_HTTP_BEARER_TOKEN."
+	default:
+		if msg := extractErrorPayload(string(body)); msg != "" {
+			return fmt.Sprintf("target API health check failed with HTTP %d: %s", status, msg)
+		}
+		return fmt.Sprintf("target API health check failed with HTTP %d", status)
 	}
 }
 
@@ -234,10 +328,18 @@ func currentSession() (sessionState, transportConfig, bool) {
 
 func ensureHTTPSession(cfg transportConfig) (sessionState, error) {
 	if cfg.baseURL == "" {
-		return sessionState{}, WrapError("Missing CLAWCHROME_CLI_HTTP_URL for http transport", ErrValidation)
+		return sessionState{}, WrapError(
+			"Missing target API URL: set CLAWCHROME_CLI_HTTP_URL for http transport",
+			ErrValidation,
+			"Set CLAWCHROME_CLI_HTTP_URL to the runtime API base URL",
+		)
 	}
 	if cfg.bearerToken == "" {
-		return sessionState{}, WrapError("Missing CLAWCHROME_CLI_HTTP_BEARER_TOKEN for http transport", ErrValidation)
+		return sessionState{}, WrapError(
+			"Missing auth token: set CLAWCHROME_CLI_HTTP_BEARER_TOKEN for http transport",
+			ErrValidation,
+			"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN to the runtime API bearer token",
+		)
 	}
 
 	state, ok := readState()
@@ -257,9 +359,9 @@ func ensureHTTPSession(cfg transportConfig) (sessionState, error) {
 	healthy, err := checkBridgeHealth(state, cfg)
 	if err != nil || !healthy {
 		if err != nil {
-			return sessionState{}, WrapError("Remote HTTP bridge is not reachable: "+err.Error(), ErrBridgeNotReady)
+			return sessionState{}, WrapError(transportSetupErrorMessage(err), ErrBridgeNotReady)
 		}
-		return sessionState{}, WrapError("Remote HTTP bridge is not reachable", ErrBridgeNotReady)
+		return sessionState{}, WrapError("target API is unreachable. Check CLAWCHROME_CLI_HTTP_URL and that the runtime is running.", ErrBridgeNotReady)
 	}
 	if err := writeState(state); err != nil {
 		return sessionState{}, err
@@ -357,15 +459,28 @@ func loadTransportConfig() (transportConfig, error) {
 	if mode == transportHTTP {
 		baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("CLAWCHROME_CLI_HTTP_URL")), "/")
 		if baseURL == "" {
-			return transportConfig{}, WrapError("Missing CLAWCHROME_CLI_HTTP_URL for http transport", ErrValidation)
+			return transportConfig{}, WrapError(
+				"Missing target API URL: set CLAWCHROME_CLI_HTTP_URL for http transport",
+				ErrValidation,
+				"Set CLAWCHROME_CLI_HTTP_URL to the runtime API base URL",
+			)
 		}
-		if _, err := neturl.Parse(baseURL); err != nil {
-			return transportConfig{}, WrapError("Invalid CLAWCHROME_CLI_HTTP_URL: "+err.Error(), ErrValidation)
+		parsedURL, err := neturl.Parse(baseURL)
+		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+			return transportConfig{}, WrapError(
+				"Invalid target API URL: set CLAWCHROME_CLI_HTTP_URL to an http or https URL",
+				ErrValidation,
+				"Example: CLAWCHROME_CLI_HTTP_URL=http://127.0.0.1:8091",
+			)
 		}
 		cfg.baseURL = baseURL
 		cfg.bearerToken = strings.TrimSpace(os.Getenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN"))
 		if cfg.bearerToken == "" {
-			return transportConfig{}, WrapError("Missing CLAWCHROME_CLI_HTTP_BEARER_TOKEN for http transport", ErrValidation)
+			return transportConfig{}, WrapError(
+				"Missing auth token: set CLAWCHROME_CLI_HTTP_BEARER_TOKEN for http transport",
+				ErrValidation,
+				"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN to the runtime API bearer token",
+			)
 		}
 	}
 	return cfg, nil
@@ -384,7 +499,8 @@ func checkBridgeHealth(state sessionState, cfg transportConfig) (bool, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, nil
+		data, _ := io.ReadAll(resp.Body)
+		return false, errors.New(httpStatusMessage(resp.StatusCode, data))
 	}
 	var payload struct {
 		Status string `json:"status"`
@@ -417,7 +533,7 @@ func postJSON(state sessionState, cfg transportConfig, path string, body any, ti
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, errors.New(string(data))
+		return nil, errors.New(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data))))
 	}
 	return data, nil
 }

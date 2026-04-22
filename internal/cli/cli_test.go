@@ -257,7 +257,7 @@ func TestMainWaitValidationAndDispatch(t *testing.T) {
 		}
 	})
 
-	t.Run("numeric target uses evaluate_script", func(t *testing.T) {
+	t.Run("numeric target uses native wait_duration", func(t *testing.T) {
 		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
 			if name != "wait_duration" {
 				t.Fatalf("unexpected tool %q with args %#v", name, args)
@@ -302,6 +302,33 @@ func TestMainWaitValidationAndDispatch(t *testing.T) {
 			t.Fatalf("expected wait suggestion, got %q", stdout.String())
 		}
 	})
+}
+
+func TestMainScrollUsesNativeTool(t *testing.T) {
+	restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+		switch name {
+		case "scroll_page":
+			if args["direction"] != "down" {
+				t.Fatalf("unexpected scroll_page args: %#v", args)
+			}
+			return "", nil
+		case "take_snapshot":
+			return "## Latest page snapshot\nRootWebArea \"Example\"\n", nil
+		default:
+			t.Fatalf("unexpected tool %q with args %#v", name, args)
+			return "", nil
+		}
+	})
+	defer restore()
+
+	var stdout bytes.Buffer
+	exitCode := Main([]string{"scroll", "down"}, &stdout, &bytes.Buffer{})
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "snapshot:") {
+		t.Fatalf("expected snapshot output, got %q", stdout.String())
+	}
 }
 
 func TestMainCommandHelp(t *testing.T) {
