@@ -69,6 +69,80 @@ func TestHTTPTransportUsesBearerAndSessionHeaders(t *testing.T) {
 	}
 }
 
+func TestCallRuntimeHTTPToolUsesDedicatedToolEndpoint(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret-token")
+
+	var toolSession string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		switch r.URL.Path {
+		case "/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/api/tools/browser_mouse_move_xy":
+			toolSession = r.Header.Get(sessionHeaderName)
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatalf("decode tool body: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":      true,
+				"action":  "mouse_move_xy",
+				"backend": "runtime-core",
+				"message": "mouse moved",
+				"data":    map[string]any{"x": 10, "y": 20},
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+
+	result, err := CallRuntimeHTTPTool("browser_mouse_move_xy", map[string]any{"x": 10, "y": 20})
+	if err != nil {
+		t.Fatalf("CallRuntimeHTTPTool failed: %v", err)
+	}
+	if result.Action != "mouse_move_xy" || result.Backend != "runtime-core" || result.Message != "mouse moved" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if toolSession == "" {
+		t.Fatalf("expected session header on tool request")
+	}
+	if gotBody["x"] != float64(10) || gotBody["y"] != float64(20) {
+		t.Fatalf("unexpected tool body: %#v", gotBody)
+	}
+}
+
+func TestCallRuntimeHTTPToolRequiresHTTPTransportWithoutStartingBridge(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "stdio")
+
+	if _, err := CallRuntimeHTTPTool("browser_mouse_move_xy", map[string]any{"x": 10, "y": 20}); err == nil {
+		t.Fatalf("expected validation error")
+	} else if cdpErr, ok := err.(*CdpError); !ok || cdpErr.Code != ErrValidation {
+		t.Fatalf("expected validation CdpError, got %#v", err)
+	}
+}
+
+func TestHTTPTransportDefaultsToProductionURL(t *testing.T) {
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_HTTP_URL", "")
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret-token")
+
+	cfg, err := loadTransportConfig()
+	if err != nil {
+		t.Fatalf("loadTransportConfig failed: %v", err)
+	}
+	if cfg.baseURL != defaultRuntimeHTTPURL {
+		t.Fatalf("expected default runtime URL %q, got %q", defaultRuntimeHTTPURL, cfg.baseURL)
+	}
+}
+
 func TestStopBridgeClearsHTTPState(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

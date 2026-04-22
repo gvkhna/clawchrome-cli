@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -63,6 +64,30 @@ func TestGetCommandHelp(t *testing.T) {
 		}
 		if strings.Contains(help, "--full") {
 			t.Fatalf("video help should not include --full")
+		}
+	})
+
+	t.Run("screenshot path is optional and defaults to temp", func(t *testing.T) {
+		help := getCommandHelp("screenshot")
+		if !strings.Contains(help, "screenshot [path]") || !strings.Contains(help, "system temp directory") {
+			t.Fatalf("expected screenshot help to describe optional temp path, got %q", help)
+		}
+	})
+
+	t.Run("video start path is optional and defaults to temp", func(t *testing.T) {
+		help := getCommandHelp("video")
+		if !strings.Contains(help, "unique .mp4 file in the system temp directory") {
+			t.Fatalf("expected video help to describe optional temp path, got %q", help)
+		}
+	})
+
+	t.Run("mouse help is grouped and has no full flag", func(t *testing.T) {
+		help := getCommandHelp("mouse")
+		if !strings.Contains(help, "mouse <action>") || !strings.Contains(help, "move <x> <y>") || !strings.Contains(help, "wheel <deltaX> <deltaY>") {
+			t.Fatalf("expected mouse help to describe grouped actions, got %q", help)
+		}
+		if strings.Contains(help, "--full") {
+			t.Fatalf("mouse help should not include --full")
 		}
 	})
 
@@ -149,6 +174,172 @@ func TestStopText(t *testing.T) {
 	if stopText(false) != "stopped (no-op)" {
 		t.Fatalf("unexpected no-op text")
 	}
+}
+
+func TestMainScreenshotResolvesOutputPath(t *testing.T) {
+	t.Run("defaults to unique temp png path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("TMPDIR", tmpDir)
+
+		var gotPath string
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "take_screenshot" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			gotPath, _ = args["filePath"].(string)
+			if filepath.Dir(gotPath) != tmpDir {
+				t.Fatalf("expected temp screenshot in %s, got %q", tmpDir, gotPath)
+			}
+			if filepath.Ext(gotPath) != ".png" {
+				t.Fatalf("expected default .png screenshot path, got %q", gotPath)
+			}
+			if _, ok := args["format"]; ok {
+				t.Fatalf("did not expect explicit format arg for default png: %#v", args)
+			}
+			return "", nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"screenshot"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d; output:\n%s", exitCode, stdout.String())
+		}
+		if gotPath == "" || !strings.Contains(stdout.String(), gotPath) {
+			t.Fatalf("expected output to include generated screenshot path %q, got %q", gotPath, stdout.String())
+		}
+		assertContainsAll(t, stdout.String(), []string{
+			"screenshot:",
+			"status: saved",
+			"path: " + gotPath,
+		})
+	})
+
+	t.Run("default path extension follows requested format", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("TMPDIR", tmpDir)
+
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "take_screenshot" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			gotPath, _ := args["filePath"].(string)
+			if filepath.Dir(gotPath) != tmpDir || filepath.Ext(gotPath) != ".jpeg" {
+				t.Fatalf("expected generated jpeg path in %s, got %q", tmpDir, gotPath)
+			}
+			if args["format"] != "jpeg" {
+				t.Fatalf("expected jpeg format arg, got %#v", args)
+			}
+			return "", nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"screenshot", "--format", "jpeg"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d; output:\n%s", exitCode, stdout.String())
+		}
+	})
+
+	t.Run("explicit path is canonicalized", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "shot.png")
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "take_screenshot" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			if args["filePath"] != path {
+				t.Fatalf("expected canonical screenshot path %q, got %#v", path, args["filePath"])
+			}
+			return "", nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"screenshot", path}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d; output:\n%s", exitCode, stdout.String())
+		}
+		if !strings.Contains(stdout.String(), path) {
+			t.Fatalf("expected output to include screenshot path %q, got %q", path, stdout.String())
+		}
+		assertContainsAll(t, stdout.String(), []string{
+			"screenshot:",
+			"status: saved",
+			"path: " + path,
+		})
+	})
+
+	t.Run("missing parent directory is a validation error before backend", func(t *testing.T) {
+		defer forbidSideEffects(t)()
+
+		path := filepath.Join(t.TempDir(), "missing", "shot.png")
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"screenshot", path}, &stdout, &bytes.Buffer{})
+		if exitCode != 2 {
+			t.Fatalf("expected validation exit code 2, got %d; output:\n%s", exitCode, stdout.String())
+		}
+		assertContainsAll(t, stdout.String(), []string{
+			"Output directory does not exist",
+			filepath.Dir(path),
+			path,
+			"usage: clawchrome-cli screenshot",
+		})
+	})
+
+	t.Run("missing temp directory is a validation error before backend", func(t *testing.T) {
+		defer forbidSideEffects(t)()
+
+		tmpDir := filepath.Join(t.TempDir(), "missing")
+		t.Setenv("TMPDIR", tmpDir)
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"screenshot"}, &stdout, &bytes.Buffer{})
+		if exitCode != 2 {
+			t.Fatalf("expected validation exit code 2, got %d; output:\n%s", exitCode, stdout.String())
+		}
+		assertContainsAll(t, stdout.String(), []string{
+			"Temporary output directory does not exist",
+			tmpDir,
+			"usage: clawchrome-cli screenshot",
+		})
+	})
+
+	t.Run("directory path is a validation error before backend", func(t *testing.T) {
+		defer forbidSideEffects(t)()
+
+		path := t.TempDir()
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"screenshot", path}, &stdout, &bytes.Buffer{})
+		if exitCode != 2 {
+			t.Fatalf("expected validation exit code 2, got %d; output:\n%s", exitCode, stdout.String())
+		}
+		assertContainsAll(t, stdout.String(), []string{
+			"Output path is a directory",
+			path,
+			"usage: clawchrome-cli screenshot",
+		})
+	})
+
+	t.Run("backend write failure includes output path", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "shot.png")
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "take_screenshot" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			return "", client.WrapError("permission denied", client.ErrBrowser)
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"screenshot", path}, &stdout, &bytes.Buffer{})
+		if exitCode != 1 {
+			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", exitCode, stdout.String())
+		}
+		assertContainsAll(t, stdout.String(), []string{
+			"Failed to save screenshot",
+			path,
+			"permission denied",
+		})
+	})
 }
 
 func TestMainPagesOutputMatchesStructuredShape(t *testing.T) {
@@ -360,6 +551,95 @@ func TestMainScrollUsesNativeTool(t *testing.T) {
 	}
 }
 
+func TestMainMouseUsesRuntimeHTTPTools(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		wantTool   string
+		wantArgs   map[string]any
+		wantStatus string
+	}{
+		{
+			name:       "move",
+			args:       []string{"mouse", "move", "10", "20"},
+			wantTool:   "browser_mouse_move_xy",
+			wantArgs:   map[string]any{"x": 10.0, "y": 20.0},
+			wantStatus: "moved",
+		},
+		{
+			name:       "click",
+			args:       []string{"mouse", "click", "10.5", "20.25"},
+			wantTool:   "browser_mouse_click_xy",
+			wantArgs:   map[string]any{"x": 10.5, "y": 20.25},
+			wantStatus: "clicked",
+		},
+		{
+			name:       "drag",
+			args:       []string{"mouse", "drag", "1", "2", "3", "4"},
+			wantTool:   "browser_mouse_drag_xy",
+			wantArgs:   map[string]any{"startX": 1.0, "startY": 2.0, "endX": 3.0, "endY": 4.0},
+			wantStatus: "dragged",
+		},
+		{
+			name:       "down default",
+			args:       []string{"mouse", "down"},
+			wantTool:   "browser_mouse_down",
+			wantArgs:   map[string]any{"button": "left"},
+			wantStatus: "pressed",
+		},
+		{
+			name:       "up right",
+			args:       []string{"mouse", "up", "right"},
+			wantTool:   "browser_mouse_up",
+			wantArgs:   map[string]any{"button": "right"},
+			wantStatus: "released",
+		},
+		{
+			name:       "wheel",
+			args:       []string{"mouse", "wheel", "0", "-500"},
+			wantTool:   "browser_mouse_wheel",
+			wantArgs:   map[string]any{"deltaX": 0.0, "deltaY": -500.0},
+			wantStatus: "scrolled",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := stubCallRuntimeHTTPTool(t, func(name string, args map[string]any) (client.RuntimeHTTPToolResponse, error) {
+				if name != tc.wantTool {
+					t.Fatalf("unexpected tool %q, want %q", name, tc.wantTool)
+				}
+				for key, want := range tc.wantArgs {
+					if args[key] != want {
+						t.Fatalf("unexpected arg %s=%#v, want %#v; args=%#v", key, args[key], want, args)
+					}
+				}
+				return client.RuntimeHTTPToolResponse{
+					OK:      true,
+					Action:  strings.TrimPrefix(tc.wantTool, "browser_"),
+					Backend: "runtime-core",
+					Message: "ok",
+					Data:    args,
+				}, nil
+			})
+			defer restore()
+
+			var stdout bytes.Buffer
+			exitCode := Main(tc.args, &stdout, &bytes.Buffer{})
+			if exitCode != 0 {
+				t.Fatalf("expected exit code 0, got %d; output:\n%s", exitCode, stdout.String())
+			}
+			assertContainsAll(t, stdout.String(), []string{
+				"mouse:",
+				"status: " + tc.wantStatus,
+				"tool: " + tc.wantTool,
+				"message: ok",
+				"backend: runtime-core",
+			})
+		})
+	}
+}
+
 func TestMainForwardAndReloadUseNavigatePage(t *testing.T) {
 	for _, tc := range []struct {
 		command string
@@ -502,11 +782,12 @@ func TestMainFormActionsUseCompatibilityTools(t *testing.T) {
 
 func TestMainVideoUsesScreencastTools(t *testing.T) {
 	t.Run("start with path", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "capture.mp4")
 		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
 			if name != "screencast_start" {
 				t.Fatalf("unexpected tool %q with args %#v", name, args)
 			}
-			if args["path"] != "./capture.mp4" {
+			if args["path"] != path {
 				t.Fatalf("unexpected screencast_start args: %#v", args)
 			}
 			return "recording started", nil
@@ -514,13 +795,79 @@ func TestMainVideoUsesScreencastTools(t *testing.T) {
 		defer restore()
 
 		var stdout bytes.Buffer
-		exitCode := Main([]string{"video", "start", "./capture.mp4"}, &stdout, &bytes.Buffer{})
+		exitCode := Main([]string{"video", "start", path}, &stdout, &bytes.Buffer{})
 		if exitCode != 0 {
 			t.Fatalf("expected exit code 0, got %d", exitCode)
 		}
-		if !strings.Contains(stdout.String(), "status: started") || !strings.Contains(stdout.String(), "path: ./capture.mp4") {
+		if !strings.Contains(stdout.String(), "status: started") || !strings.Contains(stdout.String(), "path: "+path) {
 			t.Fatalf("unexpected video start output: %q", stdout.String())
 		}
+	})
+
+	t.Run("start without path defaults to temp mp4", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		t.Setenv("TMPDIR", tmpDir)
+
+		var gotPath string
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "screencast_start" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			gotPath, _ = args["path"].(string)
+			if filepath.Dir(gotPath) != tmpDir || filepath.Ext(gotPath) != ".mp4" {
+				t.Fatalf("expected generated mp4 path in %s, got %q", tmpDir, gotPath)
+			}
+			return "recording started", nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"video", "start"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d; output:\n%s", exitCode, stdout.String())
+		}
+		if gotPath == "" || !strings.Contains(stdout.String(), gotPath) {
+			t.Fatalf("expected output to include generated video path %q, got %q", gotPath, stdout.String())
+		}
+	})
+
+	t.Run("start missing parent directory is a validation error before backend", func(t *testing.T) {
+		defer forbidSideEffects(t)()
+
+		path := filepath.Join(t.TempDir(), "missing", "capture.mp4")
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"video", "start", path}, &stdout, &bytes.Buffer{})
+		if exitCode != 2 {
+			t.Fatalf("expected validation exit code 2, got %d; output:\n%s", exitCode, stdout.String())
+		}
+		assertContainsAll(t, stdout.String(), []string{
+			"Output directory does not exist",
+			filepath.Dir(path),
+			path,
+			"usage: clawchrome-cli video",
+		})
+	})
+
+	t.Run("start backend failure includes output path", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "capture.mp4")
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "screencast_start" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			return "", client.WrapError("permission denied", client.ErrBrowser)
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"video", "start", path}, &stdout, &bytes.Buffer{})
+		if exitCode != 1 {
+			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", exitCode, stdout.String())
+		}
+		assertContainsAll(t, stdout.String(), []string{
+			"Failed to start video recording",
+			path,
+			"permission denied",
+		})
 	})
 
 	t.Run("stop", func(t *testing.T) {
@@ -649,6 +996,15 @@ func stubCallTool(t *testing.T, fn func(name string, args map[string]any) (strin
 	callTool = fn
 	return func() {
 		callTool = prev
+	}
+}
+
+func stubCallRuntimeHTTPTool(t *testing.T, fn func(name string, args map[string]any) (client.RuntimeHTTPToolResponse, error)) func() {
+	t.Helper()
+	prev := callRuntimeHTTPTool
+	callRuntimeHTTPTool = fn
+	return func() {
+		callRuntimeHTTPTool = prev
 	}
 }
 

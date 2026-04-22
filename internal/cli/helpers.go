@@ -11,8 +11,8 @@ import (
 const topHelp = `usage: clawchrome-cli [command] [args] [flags]
 
 commands:
-  open <url>, snapshot [--form] [--text], screenshot <path>, click @<uid>, fill @<uid> <text>,
-  type <text>, press <key>, scroll <dir>, back, forward, reload, wait <ms|text>,
+  open <url>, snapshot [--form] [--text], screenshot [path], click @<uid>, fill @<uid> <text>,
+  type <text>, press <key>, scroll <dir>, mouse <action>, back, forward, reload, wait <ms|text>,
   hover @<uid>, drag @<from> @<to>, fillform @<uid>=<val>..., dialog <action>,
   form <check|uncheck|select|upload>, pages, newpage <url>, selectpage <id>, closepage <id>,
   resize <w> <h>, video <start|stop>, start, stop, version, self-update [version]
@@ -22,7 +22,7 @@ flags:
 
 environment:
   CLAWCHROME_CLI_TRANSPORT=stdio   Transport mode: stdio (default) or http
-  CLAWCHROME_CLI_HTTP_URL=...      Target runtime API URL when transport is http
+  CLAWCHROME_CLI_HTTP_URL=...      Optional runtime API URL override (default: https://www.clawchrome.com)
   CLAWCHROME_CLI_HTTP_BEARER_TOKEN Auth bearer token when transport is http
   CLAWCHROME_CLI_HEADED=1          Run Chrome headed instead of headless
   CLAWCHROME_CLI_CHROME_ARGS=...   Forward additional Chrome flags
@@ -42,11 +42,11 @@ flags:
 examples:
   clawchrome-cli open https://example.com
   clawchrome-cli open https://example.com --full`,
-	"screenshot": `usage: clawchrome-cli screenshot <path> [--uid @<uid>] [--full-page] [--format png|jpeg|webp]
+	"screenshot": `usage: clawchrome-cli screenshot [path] [--uid @<uid>] [--full-page] [--format png|jpeg|webp]
 Save a screenshot to a file.
 
 args:
-  <path>  File path to save the screenshot (required)
+  [path]  File path to save the screenshot. Defaults to a unique file in the system temp directory.
 
 flags:
   --uid @<uid>    Capture a specific element instead of the full viewport
@@ -54,9 +54,10 @@ flags:
   --format <fmt>  Image format: png (default), jpeg, or webp
 
 examples:
+  clawchrome-cli screenshot
   clawchrome-cli screenshot ./page.png
-  clawchrome-cli screenshot ./element.png --uid @3
-  clawchrome-cli screenshot ./full.png --full-page --format jpeg`,
+  clawchrome-cli screenshot --uid @3
+  clawchrome-cli screenshot ./full.jpeg --full-page --format jpeg`,
 	"snapshot": `usage: clawchrome-cli snapshot [--form] [--text] [--full]
 Capture the current page accessibility snapshot.
 
@@ -120,7 +121,7 @@ examples:
   clawchrome-cli press Enter
   clawchrome-cli press Tab --full`,
 	"scroll": `usage: clawchrome-cli scroll <direction> [--full]
-Scroll the page in a direction.
+Scroll the page in a direction using page navigation keys.
 
 args:
   <direction>  up, down, top, or bottom (default: down)
@@ -131,6 +132,21 @@ flags:
 examples:
   clawchrome-cli scroll down
   clawchrome-cli scroll top --full`,
+	"mouse": `usage: clawchrome-cli mouse <action> [args]
+Perform low-level mouse actions through runtime HTTP.
+
+args:
+  move <x> <y>                         Move the pointer to page coordinates
+  click <x> <y>                        Left-click at page coordinates
+  drag <startX> <startY> <endX> <endY> Drag between page coordinates
+  down [left|right|middle]             Press a mouse button (default: left)
+  up [left|right|middle]               Release a mouse button (default: left)
+  wheel <deltaX> <deltaY>              Scroll the mouse wheel by explicit deltas
+
+examples:
+  clawchrome-cli mouse move 120 240
+  clawchrome-cli mouse click 120 240
+  clawchrome-cli mouse wheel 0 500`,
 	"back": `usage: clawchrome-cli back [--full]
 Navigate back in browser history.
 
@@ -248,7 +264,7 @@ Start or stop page video recording.
 
 args:
   <start|stop>  Video action to perform (required)
-  [path]        Output path for video start. Omit to let the runtime choose.
+  [path]        Output path for video start. Defaults to a unique .mp4 file in the system temp directory.
 
 examples:
   clawchrome-cli video start
@@ -346,6 +362,7 @@ var commandOrder = []string{
 	"type",
 	"press",
 	"scroll",
+	"mouse",
 	"back",
 	"forward",
 	"reload",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ var Version = "0.1.0-dev"
 
 var (
 	callTool                    = client.CallTool
+	callRuntimeHTTPTool         = client.CallRuntimeHTTPTool
 	ensureBridge                = client.EnsureBridge
 	getSessionSnapshotIfRunning = client.GetSessionSnapshotIfRunning
 	stopBridge                  = client.StopBridge
@@ -102,6 +104,8 @@ func runCommand(command string, args []string, full bool) (string, error) {
 		return handlePress(args, full)
 	case "scroll":
 		return handleScroll(args, full)
+	case "mouse":
+		return handleMouse(args)
 	case "back":
 		return handleBack(args, full)
 	case "forward":
@@ -256,11 +260,17 @@ func handleScreenshot(args []string) (string, error) {
 	if parsed.invalid != "" {
 		return "", validationError("screenshot", parsed.invalid)
 	}
-	if parsed.filePath == "" {
-		return "", validationError("screenshot", "Missing file path")
+
+	format := parsed.format
+	if format == "" {
+		format = "png"
+	}
+	filePath, err := resolveOutputFilePath("screenshot", parsed.filePath, "clawchrome-cli-screenshot-*."+format)
+	if err != nil {
+		return "", err
 	}
 
-	toolArgs := map[string]any{"filePath": parsed.filePath}
+	toolArgs := map[string]any{"filePath": filePath}
 	if parsed.uid != "" {
 		toolArgs["uid"] = parsed.uid
 	}
@@ -272,9 +282,9 @@ func handleScreenshot(args []string) (string, error) {
 	}
 
 	if _, err := callTool("take_screenshot", toolArgs); err != nil {
-		return "", err
+		return "", outputPathOperationError("save screenshot", filePath, err)
 	}
-	return encode(map[string]any{"screenshot": parsed.filePath}), nil
+	return encode(map[string]any{"screenshot": map[string]any{"status": "saved", "path": filePath}}), nil
 }
 
 func handleFill(args []string, full bool) (string, error) {
@@ -358,6 +368,193 @@ func handleScroll(args []string, full bool) (string, error) {
 		return "", err
 	}
 	return formatPageOutput(snapshot.StripSnapshotHeader(snap), "scroll", "", full), nil
+}
+
+func handleMouse(args []string) (string, error) {
+	if len(args) == 0 {
+		return "", validationError("mouse", "Missing mouse action")
+	}
+	action := strings.ToLower(strings.TrimSpace(args[0]))
+	switch action {
+	case "move":
+		return handleMouseMove(args[1:])
+	case "click":
+		return handleMouseClick(args[1:])
+	case "drag":
+		return handleMouseDrag(args[1:])
+	case "down":
+		return handleMouseButton(args[1:], "down", "browser_mouse_down")
+	case "up":
+		return handleMouseButton(args[1:], "up", "browser_mouse_up")
+	case "wheel":
+		return handleMouseWheel(args[1:])
+	default:
+		if strings.HasPrefix(args[0], "-") {
+			return "", unexpectedArgError("mouse", args[0])
+		}
+		return "", validationError("mouse", "Unknown mouse action: "+args[0])
+	}
+}
+
+func handleMouseMove(args []string) (string, error) {
+	if len(args) < 2 {
+		return "", validationError("mouse", "Missing mouse coordinates")
+	}
+	if len(args) > 2 {
+		return "", unexpectedArgError("mouse", args[2])
+	}
+	x, y, err := parseMousePointArgs(args, "x", "y")
+	if err != nil {
+		return "", err
+	}
+	return callMouseTool("move", "browser_mouse_move_xy", map[string]any{"x": x, "y": y})
+}
+
+func handleMouseClick(args []string) (string, error) {
+	if len(args) < 2 {
+		return "", validationError("mouse", "Missing mouse coordinates")
+	}
+	if len(args) > 2 {
+		return "", unexpectedArgError("mouse", args[2])
+	}
+	x, y, err := parseMousePointArgs(args, "x", "y")
+	if err != nil {
+		return "", err
+	}
+	return callMouseTool("click", "browser_mouse_click_xy", map[string]any{"x": x, "y": y})
+}
+
+func handleMouseDrag(args []string) (string, error) {
+	if len(args) < 4 {
+		return "", validationError("mouse", "Missing drag coordinates")
+	}
+	if len(args) > 4 {
+		return "", unexpectedArgError("mouse", args[4])
+	}
+	startX, startY, err := parseMousePointArgs(args[0:2], "startX", "startY")
+	if err != nil {
+		return "", err
+	}
+	endX, endY, err := parseMousePointArgs(args[2:4], "endX", "endY")
+	if err != nil {
+		return "", err
+	}
+	return callMouseTool("drag", "browser_mouse_drag_xy", map[string]any{
+		"startX": startX,
+		"startY": startY,
+		"endX":   endX,
+		"endY":   endY,
+	})
+}
+
+func handleMouseButton(args []string, action string, tool string) (string, error) {
+	if len(args) > 1 {
+		return "", unexpectedArgError("mouse", args[1])
+	}
+	button := "left"
+	if len(args) == 1 {
+		if strings.HasPrefix(args[0], "-") {
+			return "", unexpectedArgError("mouse", args[0])
+		}
+		switch strings.ToLower(args[0]) {
+		case "left", "right", "middle":
+			button = strings.ToLower(args[0])
+		default:
+			return "", validationError("mouse", "Invalid mouse button: "+args[0])
+		}
+	}
+	return callMouseTool(action, tool, map[string]any{"button": button})
+}
+
+func handleMouseWheel(args []string) (string, error) {
+	if len(args) < 2 {
+		return "", validationError("mouse", "Missing wheel deltas")
+	}
+	if len(args) > 2 {
+		return "", unexpectedArgError("mouse", args[2])
+	}
+	deltaX, err := parseMouseNumberArg("mouse", "deltaX", args[0], true)
+	if err != nil {
+		return "", err
+	}
+	deltaY, err := parseMouseNumberArg("mouse", "deltaY", args[1], true)
+	if err != nil {
+		return "", err
+	}
+	return callMouseTool("wheel", "browser_mouse_wheel", map[string]any{"deltaX": deltaX, "deltaY": deltaY})
+}
+
+func parseMousePointArgs(args []string, xName string, yName string) (float64, float64, error) {
+	x, err := parseMouseNumberArg("mouse", xName, args[0], false)
+	if err != nil {
+		return 0, 0, err
+	}
+	y, err := parseMouseNumberArg("mouse", yName, args[1], false)
+	if err != nil {
+		return 0, 0, err
+	}
+	return x, y, nil
+}
+
+func parseMouseNumberArg(command string, name string, raw string, allowNegative bool) (float64, error) {
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		if strings.HasPrefix(raw, "-") {
+			return 0, unexpectedArgError(command, raw)
+		}
+		return 0, validationError(command, "Invalid "+name+" value: "+raw)
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, validationError(command, "Invalid "+name+" value: "+raw)
+	}
+	if !allowNegative && value < 0 {
+		return 0, validationError(command, name+" must be non-negative")
+	}
+	return value, nil
+}
+
+func callMouseTool(action string, tool string, args map[string]any) (string, error) {
+	result, err := callRuntimeHTTPTool(tool, args)
+	if err != nil {
+		return "", err
+	}
+	payload := map[string]any{
+		"mouse": map[string]any{
+			"status": mouseStatus(action),
+			"action": action,
+			"tool":   tool,
+		},
+	}
+	mouse := payload["mouse"].(map[string]any)
+	if result.Message != "" {
+		mouse["message"] = result.Message
+	}
+	if result.Backend != "" {
+		mouse["backend"] = result.Backend
+	}
+	if result.Data != nil {
+		mouse["data"] = result.Data
+	}
+	return encode(payload), nil
+}
+
+func mouseStatus(action string) string {
+	switch action {
+	case "move":
+		return "moved"
+	case "click":
+		return "clicked"
+	case "drag":
+		return "dragged"
+	case "down":
+		return "pressed"
+	case "up":
+		return "released"
+	case "wheel":
+		return "scrolled"
+	default:
+		return "ok"
+	}
 }
 
 func handleBack(args []string, full bool) (string, error) {
@@ -748,21 +945,23 @@ func handleVideoStart(args []string) (string, error) {
 	if len(args) > 1 {
 		return "", unexpectedArgError("video", args[1])
 	}
-	toolArgs := map[string]any{}
+	pathArg := ""
 	if len(args) == 1 {
 		if strings.HasPrefix(args[0], "-") {
 			return "", unexpectedArgError("video", args[0])
 		}
-		toolArgs["path"] = args[0]
+		pathArg = args[0]
 	}
-	result, err := callTool("screencast_start", toolArgs)
+	path, err := resolveOutputFilePath("video", pathArg, "clawchrome-cli-video-*.mp4")
 	if err != nil {
 		return "", err
 	}
-	payload := map[string]any{"video": map[string]any{"status": "started"}}
-	if path, ok := toolArgs["path"].(string); ok && path != "" {
-		payload["video"].(map[string]any)["path"] = path
+	toolArgs := map[string]any{"path": path}
+	result, err := callTool("screencast_start", toolArgs)
+	if err != nil {
+		return "", outputPathOperationError("start video recording", path, err)
 	}
+	payload := map[string]any{"video": map[string]any{"status": "started", "path": path}}
 	if strings.TrimSpace(result) != "" {
 		payload["video"].(map[string]any)["result"] = strings.TrimSpace(result)
 	}

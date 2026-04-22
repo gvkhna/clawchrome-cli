@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gvkhna/clawchrome-cli/internal/client"
 )
 
 func TestAXITopLevelHelpAliases(t *testing.T) {
@@ -96,7 +98,6 @@ func TestAXIValidationErrorsAreScopedAndDoNotCallBackend(t *testing.T) {
 		{"open missing url", []string{"open"}, "Missing URL", "usage: clawchrome-cli open"},
 		{"open unknown flag", []string{"open", "https://example.com", "--bogus"}, "Unexpected", "usage: clawchrome-cli open"},
 		{"snapshot unknown flag", []string{"snapshot", "--bogus"}, "Unexpected", "usage: clawchrome-cli snapshot"},
-		{"screenshot missing path", []string{"screenshot"}, "Missing file path", "usage: clawchrome-cli screenshot"},
 		{"screenshot unknown flag", []string{"screenshot", "./page.png", "--bogus"}, "Unexpected", "usage: clawchrome-cli screenshot"},
 		{"click missing ref", []string{"click"}, "Missing element ref", "usage: clawchrome-cli click"},
 		{"fill missing text", []string{"fill", "@1"}, "Missing fill text", "usage: clawchrome-cli fill"},
@@ -105,6 +106,15 @@ func TestAXIValidationErrorsAreScopedAndDoNotCallBackend(t *testing.T) {
 		{"press unknown flag", []string{"press", "--bogus"}, "Unexpected", "usage: clawchrome-cli press"},
 		{"scroll invalid direction", []string{"scroll", "sideways"}, "Unknown scroll direction", "usage: clawchrome-cli scroll"},
 		{"scroll unknown flag", []string{"scroll", "--bogus"}, "Unexpected", "usage: clawchrome-cli scroll"},
+		{"mouse missing action", []string{"mouse"}, "Missing mouse action", "usage: clawchrome-cli mouse"},
+		{"mouse invalid action", []string{"mouse", "doubleclick"}, "Unknown mouse action", "usage: clawchrome-cli mouse"},
+		{"mouse move missing coords", []string{"mouse", "move", "10"}, "Missing mouse coordinates", "usage: clawchrome-cli mouse"},
+		{"mouse move invalid x", []string{"mouse", "move", "left", "20"}, "Invalid x value", "usage: clawchrome-cli mouse"},
+		{"mouse click unexpected arg", []string{"mouse", "click", "10", "20", "extra"}, "Unexpected", "usage: clawchrome-cli mouse"},
+		{"mouse drag missing coords", []string{"mouse", "drag", "1", "2", "3"}, "Missing drag coordinates", "usage: clawchrome-cli mouse"},
+		{"mouse down invalid button", []string{"mouse", "down", "primary"}, "Invalid mouse button", "usage: clawchrome-cli mouse"},
+		{"mouse wheel missing deltas", []string{"mouse", "wheel", "100"}, "Missing wheel deltas", "usage: clawchrome-cli mouse"},
+		{"mouse unexpected full", []string{"mouse", "--full"}, "Unexpected", "usage: clawchrome-cli mouse"},
 		{"back unexpected arg", []string{"back", "extra"}, "Unexpected", "usage: clawchrome-cli back"},
 		{"forward unexpected arg", []string{"forward", "extra"}, "Unexpected", "usage: clawchrome-cli forward"},
 		{"reload unexpected arg", []string{"reload", "extra"}, "Unexpected", "usage: clawchrome-cli reload"},
@@ -201,27 +211,11 @@ func TestAXIRefArgumentsValidateBeforeBackendCalls(t *testing.T) {
 }
 
 func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
-	t.Run("missing url explains required target api env", func(t *testing.T) {
+	t.Run("http transport uses default target and missing token explains auth", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
-		t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret")
-
-		code, stdout, stderr := runMainForAXITest([]string{"pages"})
-		if code != 2 {
-			t.Fatalf("expected validation exit code 2, got %d; output:\n%s", code, stdout)
-		}
-		assertContainsAll(t, stdout, []string{
-			"CLAWCHROME_CLI_HTTP_URL",
-			"target",
-			"help[",
-		})
-		assertQuietStderr(t, stderr)
-	})
-
-	t.Run("missing token explains auth env", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
-		t.Setenv("CLAWCHROME_CLI_HTTP_URL", "http://127.0.0.1:9")
+		t.Setenv("CLAWCHROME_CLI_HTTP_URL", "")
+		t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "")
 
 		code, stdout, stderr := runMainForAXITest([]string{"pages"})
 		if code != 2 {
@@ -230,6 +224,27 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		assertContainsAll(t, stdout, []string{
 			"CLAWCHROME_CLI_HTTP_BEARER_TOKEN",
 			"auth",
+			"empty",
+			"help[",
+		})
+		assertNotContainsAny(t, stdout, []string{"Missing target API URL"})
+		assertQuietStderr(t, stderr)
+	})
+
+	t.Run("missing token explains auth env", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+		t.Setenv("CLAWCHROME_CLI_HTTP_URL", "http://127.0.0.1:9")
+		t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "")
+
+		code, stdout, stderr := runMainForAXITest([]string{"pages"})
+		if code != 2 {
+			t.Fatalf("expected validation exit code 2, got %d; output:\n%s", code, stdout)
+		}
+		assertContainsAll(t, stdout, []string{
+			"CLAWCHROME_CLI_HTTP_BEARER_TOKEN",
+			"auth",
+			"empty",
 			"help[",
 		})
 		assertQuietStderr(t, stderr)
@@ -246,7 +261,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 			t.Fatalf("expected validation exit code 2, got %d; output:\n%s", code, stdout)
 		}
 		assertContainsAll(t, stdout, []string{
-			"Invalid target API URL",
+			"Invalid CLAWCHROME_CLI_HTTP_URL override",
 			"CLAWCHROME_CLI_HTTP_URL=http://127.0.0.1:8091",
 			"usage: clawchrome-cli pages",
 		})
@@ -264,6 +279,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", code, stdout)
 		}
 		assertContainsAll(t, stdout, []string{
+			"BRIDGE_NOT_READY",
 			"error",
 			"target",
 			"unreachable",
@@ -291,6 +307,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", code, stdout)
 		}
+		assertContainsAll(t, stdout, []string{"AUTH_ERROR"})
 		assertContainsAny(t, strings.ToLower(stdout), []string{"auth", "permission"})
 		assertNotContainsAny(t, stdout, []string{"not reachable", "raw", "unauthorized\n"})
 		assertQuietStderr(t, stderr)
@@ -319,8 +336,148 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", code, stdout)
 		}
+		assertContainsAll(t, stdout, []string{"AUTH_ERROR"})
 		assertContainsAny(t, strings.ToLower(stdout), []string{"auth", "permission"})
 		assertNotContainsAny(t, stdout, []string{`{"error":"forbidden"}`, "BROWSER_ERROR"})
+		assertQuietStderr(t, stderr)
+	})
+
+	t.Run("call server error is translated with server code", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+		t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret")
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/health":
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+			case "/call":
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "internal failure"})
+			default:
+				t.Fatalf("unexpected path %s", r.URL.Path)
+			}
+		}))
+		defer server.Close()
+		t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+
+		code, stdout, stderr := runMainForAXITest([]string{"pages"})
+		if code != 1 {
+			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", code, stdout)
+		}
+		assertContainsAll(t, stdout, []string{
+			"SERVER_ERROR",
+			"HTTP 500",
+			"internal failure",
+		})
+		assertNotContainsAny(t, stdout, []string{`{"error":"internal failure"}`})
+		assertQuietStderr(t, stderr)
+	})
+
+	t.Run("health rate limit is translated with retry context", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+		t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret")
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/health" {
+				t.Fatalf("unexpected path %s", r.URL.Path)
+			}
+			w.Header().Set("Retry-After", "5")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "slow down"})
+		}))
+		defer server.Close()
+		t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+
+		code, stdout, stderr := runMainForAXITest([]string{"pages"})
+		if code != 1 {
+			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", code, stdout)
+		}
+		assertContainsAll(t, stdout, []string{
+			"RATE_LIMITED",
+			"rate limited",
+			"Retry after 5",
+			"slow down",
+		})
+		if count := strings.Count(stdout, "Retry after 5"); count != 1 {
+			t.Fatalf("expected Retry-After guidance once, got %d; output:\n%s", count, stdout)
+		}
+		assertNotContainsAny(t, stdout, []string{`{"error":"slow down"}`})
+		assertQuietStderr(t, stderr)
+	})
+
+	t.Run("call rate limit is translated with retry context", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+		t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret")
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/health":
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+			case "/call":
+				w.Header().Set("Retry-After", "10")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "quota exceeded"})
+			default:
+				t.Fatalf("unexpected path %s", r.URL.Path)
+			}
+		}))
+		defer server.Close()
+		t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+
+		code, stdout, stderr := runMainForAXITest([]string{"pages"})
+		if code != 1 {
+			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", code, stdout)
+		}
+		assertContainsAll(t, stdout, []string{
+			"RATE_LIMITED",
+			"/call",
+			"Retry after 10",
+			"quota exceeded",
+		})
+		if count := strings.Count(stdout, "Retry after 10"); count != 1 {
+			t.Fatalf("expected Retry-After guidance once, got %d; output:\n%s", count, stdout)
+		}
+		assertNotContainsAny(t, stdout, []string{`{"error":"quota exceeded"}`})
+		assertQuietStderr(t, stderr)
+	})
+
+	t.Run("temporary server failure is translated with retry context", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+		t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret")
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/health":
+				_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+			case "/call":
+				w.Header().Set("Retry-After", "30")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_ = json.NewEncoder(w).Encode(map[string]any{"detail": "maintenance"})
+			default:
+				t.Fatalf("unexpected path %s", r.URL.Path)
+			}
+		}))
+		defer server.Close()
+		t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+
+		code, stdout, stderr := runMainForAXITest([]string{"pages"})
+		if code != 1 {
+			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", code, stdout)
+		}
+		assertContainsAll(t, stdout, []string{
+			"BRIDGE_NOT_READY",
+			"temporarily unavailable",
+			"Retry after 30",
+			"maintenance",
+		})
+		if count := strings.Count(stdout, "Retry after 30"); count != 1 {
+			t.Fatalf("expected Retry-After guidance once, got %d; output:\n%s", count, stdout)
+		}
+		assertNotContainsAny(t, stdout, []string{`{"detail":"maintenance"}`})
 		assertQuietStderr(t, stderr)
 	})
 }
@@ -370,6 +527,10 @@ func forbidSideEffects(t *testing.T) func() {
 		stubCallTool(t, func(name string, args map[string]any) (string, error) {
 			t.Fatalf("validation/help path called backend tool %q with args %#v", name, args)
 			return "", nil
+		}),
+		stubCallRuntimeHTTPTool(t, func(name string, args map[string]any) (client.RuntimeHTTPToolResponse, error) {
+			t.Fatalf("validation/help path called runtime HTTP tool %q with args %#v", name, args)
+			return client.RuntimeHTTPToolResponse{}, nil
 		}),
 		stubEnsureBridge(t, func() (int, error) {
 			t.Fatalf("validation/help path attempted to ensure bridge")

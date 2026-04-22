@@ -29,6 +29,8 @@ const (
 	ErrTimeout        ErrorCode = "TIMEOUT"
 	ErrBrowser        ErrorCode = "BROWSER_ERROR"
 	ErrAuth           ErrorCode = "AUTH_ERROR"
+	ErrRateLimited    ErrorCode = "RATE_LIMITED"
+	ErrServer         ErrorCode = "SERVER_ERROR"
 	ErrValidation     ErrorCode = "VALIDATION_ERROR"
 	ErrUnknown        ErrorCode = "UNKNOWN"
 )
@@ -40,6 +42,8 @@ const (
 	defaultRemoteHealthPath   = "/health"
 	defaultRemoteCallPath     = "/call"
 	defaultRemoteToolsPath    = "/tools"
+	defaultRuntimeHTTPURL     = "https://www.clawchrome.com"
+	defaultRuntimeToolPrefix  = "/api/tools/"
 	defaultRemoteAuthHeader   = "Authorization"
 	defaultStateDirName       = ".clawchrome-cli"
 	defaultSessionStateName   = "session.json"
@@ -54,6 +58,14 @@ type CdpError struct {
 	Message     string
 	Code        ErrorCode
 	Suggestions []string
+}
+
+type RuntimeHTTPToolResponse struct {
+	OK      bool   `json:"ok"`
+	Action  string `json:"action"`
+	Backend string `json:"backend,omitempty"`
+	Message string `json:"message,omitempty"`
+	Data    any    `json:"data,omitempty"`
 }
 
 type sessionState struct {
@@ -114,7 +126,7 @@ func CallTool(name string, args map[string]any) (string, error) {
 		"args": args,
 	}, defaultCallTimeout)
 	if err != nil {
-		return "", mapError(err.Error())
+		return "", mapTransportError(err)
 	}
 
 	var response struct {
@@ -128,6 +140,42 @@ func CallTool(name string, args map[string]any) (string, error) {
 		return "", mapError(response.Error)
 	}
 	return response.Result, nil
+}
+
+func CallRuntimeHTTPTool(name string, args map[string]any) (RuntimeHTTPToolResponse, error) {
+	cfg, err := loadTransportConfig()
+	if err != nil {
+		return RuntimeHTTPToolResponse{}, err
+	}
+	if cfg.mode != transportHTTP {
+		return RuntimeHTTPToolResponse{}, WrapError(
+			"mouse commands require runtime HTTP transport; the stdio chrome-devtools-mcp bridge does not expose browser_mouse_* tools.",
+			ErrValidation,
+			"Set CLAWCHROME_CLI_TRANSPORT=http; set CLAWCHROME_CLI_HTTP_URL only to override the runtime API target",
+		)
+	}
+	state, err := ensureHTTPSession(cfg)
+	if err != nil {
+		return RuntimeHTTPToolResponse{}, err
+	}
+
+	payload, err := postJSON(state, cfg, defaultRuntimeToolPrefix+name, args, defaultCallTimeout)
+	if err != nil {
+		return RuntimeHTTPToolResponse{}, mapTransportError(err)
+	}
+
+	var response RuntimeHTTPToolResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		return RuntimeHTTPToolResponse{}, err
+	}
+	if !response.OK {
+		message := strings.TrimSpace(response.Message)
+		if message == "" {
+			message = "runtime HTTP tool failed: " + name
+		}
+		return RuntimeHTTPToolResponse{}, WrapError(message, ErrBrowser)
+	}
+	return response, nil
 }
 
 func GetSessionSnapshotIfRunning() (string, bool) {
@@ -186,18 +234,40 @@ func mapError(message string) error {
 	lower := strings.ToLower(combined)
 
 	switch {
+	case strings.Contains(lower, "http 429") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "rate limit"):
+		return &CdpError{
+			Message: "target API rate limited the request.",
+			Code:    ErrRateLimited,
+			Suggestions: []string{
+				"Retry after a short delay",
+				"Reduce concurrent requests to the runtime API",
+			},
+		}
 	case strings.Contains(lower, "http 401"), strings.Contains(lower, "http 403"), strings.Contains(lower, "unauthorized"), strings.Contains(lower, "forbidden"):
 		return &CdpError{
-			Message: "target API auth failed. Check CLAWCHROME_CLI_HTTP_BEARER_TOKEN.",
+			Message: "target API auth failed. CLAWCHROME_CLI_HTTP_BEARER_TOKEN was rejected or is not accepted by the server.",
 			Code:    ErrAuth,
 			Suggestions: []string{
 				"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN to a token accepted by the target runtime API",
 			},
 		}
-	case strings.Contains(lower, "econnrefused"), strings.Contains(lower, "econnreset"), strings.Contains(lower, "connection refused"), strings.Contains(lower, "no such host"):
+	case strings.Contains(lower, "http 502"), strings.Contains(lower, "http 503"), strings.Contains(lower, "http 504"), strings.Contains(lower, "bad gateway"), strings.Contains(lower, "service unavailable"), strings.Contains(lower, "gateway timeout"):
 		return &CdpError{
-			Message: "target API is unreachable. Check CLAWCHROME_CLI_HTTP_URL and that the runtime is running.",
+			Message: "target API is temporarily unavailable.",
 			Code:    ErrBridgeNotReady,
+			Suggestions: []string{
+				"Retry the command after the server recovers",
+				"Check that the runtime API target is healthy",
+			},
+		}
+	case strings.Contains(lower, "econnrefused"), strings.Contains(lower, "econnreset"), strings.Contains(lower, "connection refused"), strings.Contains(lower, "connection reset"), strings.Contains(lower, "no such host"), strings.Contains(lower, "no route to host"), strings.Contains(lower, "network is unreachable"):
+		return &CdpError{
+			Message: "target API is unreachable. Check the runtime API target and that the runtime API server is running, then retry.",
+			Code:    ErrBridgeNotReady,
+			Suggestions: []string{
+				"Start or restart the runtime API server",
+				"Set CLAWCHROME_CLI_HTTP_URL only if overriding the default runtime API target",
+			},
 		}
 	case strings.Contains(lower, "uid") || strings.Contains(lower, "element"):
 		ref := extractRef(combined)
@@ -220,7 +290,14 @@ func mapError(message string) error {
 			},
 		}
 	case strings.Contains(lower, "timeout"):
-		return &CdpError{Message: "Timed out waiting for the browser runtime.", Code: ErrTimeout, Suggestions: []string{"Run `clawchrome-cli snapshot` to see current page state"}}
+		return &CdpError{
+			Message: "Timed out waiting for the browser runtime or target API. Retry after a short delay and check that the runtime is healthy.",
+			Code:    ErrTimeout,
+			Suggestions: []string{
+				"Retry the command",
+				"Run `clawchrome-cli snapshot` to see current page state",
+			},
+		}
 	default:
 		if interpreted != "" {
 			return &CdpError{Message: interpreted, Code: ErrBrowser, Suggestions: []string{"Run `clawchrome-cli snapshot` to see current page state"}}
@@ -229,17 +306,36 @@ func mapError(message string) error {
 	}
 }
 
+func mapTransportError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if cdpErr, ok := err.(*CdpError); ok {
+		return cdpErr
+	}
+	return mapError(err.Error())
+}
+
 func extractErrorPayload(message string) string {
-	for _, candidate := range []string{message, jsonSubstring(message)} {
+	for _, candidate := range []string{jsonSubstring(message), message} {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
 			continue
 		}
-		var payload struct {
-			Error string `json:"error"`
+		var payload map[string]any
+		if json.Unmarshal([]byte(candidate), &payload) == nil {
+			for _, key := range []string{"error", "message", "detail", "title"} {
+				if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
+					return strings.TrimSpace(value)
+				}
+			}
+			continue
 		}
-		if json.Unmarshal([]byte(candidate), &payload) == nil && payload.Error != "" {
-			return payload.Error
+		if !strings.HasPrefix(candidate, "{") && !strings.HasPrefix(candidate, "[") {
+			if len(candidate) > 300 {
+				return strings.TrimSpace(candidate[:300]) + "..."
+			}
+			return candidate
 		}
 	}
 	return ""
@@ -268,25 +364,117 @@ func extractRef(message string) string {
 
 func transportSetupErrorMessage(err error) string {
 	if err == nil {
-		return "target API is unreachable. Check CLAWCHROME_CLI_HTTP_URL and that the runtime is running."
+		return "target API is unreachable. Check the runtime API target and that the runtime is running."
 	}
 	lower := strings.ToLower(err.Error())
 	if strings.Contains(lower, "auth") || strings.Contains(lower, "permission") || strings.Contains(lower, "401") || strings.Contains(lower, "403") {
 		return "target API auth failed. Check CLAWCHROME_CLI_HTTP_BEARER_TOKEN."
 	}
-	return "target API is unreachable. Check CLAWCHROME_CLI_HTTP_URL and that the runtime is running."
+	return "target API is unreachable. Check the runtime API target and that the runtime is running."
 }
 
-func httpStatusMessage(status int, body []byte) string {
+func httpStatusError(status int, body []byte, headers http.Header, state sessionState, cfg transportConfig, path string) error {
+	detail := extractErrorPayload(string(body))
+	target := transportTargetDescription(state, cfg)
+	retryAfter := strings.TrimSpace(headers.Get("Retry-After"))
+	retryHint := "Retry the command after a short delay"
+	if retryAfter != "" {
+		retryHint = "Retry after " + retryAfter
+	}
+	if detail != "" {
+		lowerDetail := strings.ToLower(detail)
+		if strings.Contains(lowerDetail, "uid") || strings.Contains(lowerDetail, "element") {
+			return mapError(detail)
+		}
+	}
+
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return "target API auth failed. Check CLAWCHROME_CLI_HTTP_BEARER_TOKEN."
-	default:
-		if msg := extractErrorPayload(string(body)); msg != "" {
-			return fmt.Sprintf("target API health check failed with HTTP %d: %s", status, msg)
+		message := fmt.Sprintf("target API auth failed at %s (HTTP %d). CLAWCHROME_CLI_HTTP_BEARER_TOKEN was rejected or is not authorized.", target, status)
+		if cfg.mode == transportHTTP && strings.TrimSpace(cfg.bearerToken) == "" {
+			message = fmt.Sprintf("target API auth failed at %s (HTTP %d). CLAWCHROME_CLI_HTTP_BEARER_TOKEN is empty.", target, status)
 		}
-		return fmt.Sprintf("target API health check failed with HTTP %d", status)
+		return &CdpError{
+			Message: message,
+			Code:    ErrAuth,
+			Suggestions: []string{
+				"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN to a token accepted by the target runtime API",
+				"Verify the runtime API target is the intended server",
+			},
+		}
+	case http.StatusTooManyRequests:
+		message := fmt.Sprintf("target API rate limited %s at %s (HTTP 429)", path, target)
+		if detail != "" {
+			message += ": " + detail
+		} else {
+			message += "."
+		}
+		return &CdpError{
+			Message: message,
+			Code:    ErrRateLimited,
+			Suggestions: []string{
+				retryHint,
+				"Reduce concurrent requests to the runtime API",
+			},
+		}
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		message := fmt.Sprintf("target API is temporarily unavailable at %s (HTTP %d) while calling %s", target, status, path)
+		if detail != "" {
+			message += ": " + detail
+		} else {
+			message += "."
+		}
+		return &CdpError{
+			Message: message,
+			Code:    ErrBridgeNotReady,
+			Suggestions: []string{
+				retryHint,
+				"Check that the runtime API server is healthy",
+			},
+		}
+	case http.StatusNotFound:
+		message := fmt.Sprintf("target API endpoint was not found at %s%s (HTTP 404). Check the runtime API target is the expected API base URL.", target, path)
+		if detail != "" {
+			message += " " + detail
+		}
+		return &CdpError{
+			Message: message,
+			Code:    ErrBridgeNotReady,
+			Suggestions: []string{
+				"Set CLAWCHROME_CLI_HTTP_URL only if overriding the default runtime API target",
+			},
+		}
+	default:
+		message := fmt.Sprintf("target API request to %s at %s failed with HTTP %d", path, target, status)
+		code := ErrBrowser
+		if status >= 500 {
+			message = fmt.Sprintf("target API server error at %s while calling %s (HTTP %d)", target, path, status)
+			code = ErrServer
+		}
+		if detail != "" {
+			message += ": " + detail
+		} else {
+			message += "."
+		}
+		return &CdpError{
+			Message: message,
+			Code:    code,
+			Suggestions: []string{
+				"Retry if the runtime API was restarting",
+				"Check the runtime API server logs if the error persists",
+			},
+		}
 	}
+}
+
+func transportTargetDescription(state sessionState, cfg transportConfig) string {
+	if cfg.mode == transportHTTP && cfg.baseURL != "" {
+		return cfg.baseURL
+	}
+	if state.Port > 0 {
+		return fmt.Sprintf("local bridge http://127.0.0.1:%d", state.Port)
+	}
+	return "target API"
 }
 
 func ensureSession() (sessionState, transportConfig, error) {
@@ -329,9 +517,9 @@ func currentSession() (sessionState, transportConfig, bool) {
 func ensureHTTPSession(cfg transportConfig) (sessionState, error) {
 	if cfg.baseURL == "" {
 		return sessionState{}, WrapError(
-			"Missing target API URL: set CLAWCHROME_CLI_HTTP_URL for http transport",
+			"Missing resolved target API URL for http transport",
 			ErrValidation,
-			"Set CLAWCHROME_CLI_HTTP_URL to the runtime API base URL",
+			"Set CLAWCHROME_CLI_HTTP_URL only if overriding the default runtime API target",
 		)
 	}
 	if cfg.bearerToken == "" {
@@ -359,9 +547,13 @@ func ensureHTTPSession(cfg transportConfig) (sessionState, error) {
 	healthy, err := checkBridgeHealth(state, cfg)
 	if err != nil || !healthy {
 		if err != nil {
-			return sessionState{}, WrapError(transportSetupErrorMessage(err), ErrBridgeNotReady)
+			return sessionState{}, mapTransportError(err)
 		}
-		return sessionState{}, WrapError("target API is unreachable. Check CLAWCHROME_CLI_HTTP_URL and that the runtime is running.", ErrBridgeNotReady)
+		return sessionState{}, WrapError(
+			"target API health check did not return ok. Check the runtime API target and that the runtime API server is healthy.",
+			ErrBridgeNotReady,
+			"Retry after the runtime API server is healthy",
+		)
 	}
 	if err := writeState(state); err != nil {
 		return sessionState{}, err
@@ -457,18 +649,15 @@ func loadTransportConfig() (transportConfig, error) {
 
 	cfg := transportConfig{mode: mode}
 	if mode == transportHTTP {
-		baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("CLAWCHROME_CLI_HTTP_URL")), "/")
+		baseURL := strings.TrimSpace(os.Getenv("CLAWCHROME_CLI_HTTP_URL"))
 		if baseURL == "" {
-			return transportConfig{}, WrapError(
-				"Missing target API URL: set CLAWCHROME_CLI_HTTP_URL for http transport",
-				ErrValidation,
-				"Set CLAWCHROME_CLI_HTTP_URL to the runtime API base URL",
-			)
+			baseURL = defaultRuntimeHTTPURL
 		}
+		baseURL = strings.TrimRight(baseURL, "/")
 		parsedURL, err := neturl.Parse(baseURL)
 		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
 			return transportConfig{}, WrapError(
-				"Invalid target API URL: set CLAWCHROME_CLI_HTTP_URL to an http or https URL",
+				"Invalid CLAWCHROME_CLI_HTTP_URL override: expected an http or https URL",
 				ErrValidation,
 				"Example: CLAWCHROME_CLI_HTTP_URL=http://127.0.0.1:8091",
 			)
@@ -477,7 +666,7 @@ func loadTransportConfig() (transportConfig, error) {
 		cfg.bearerToken = strings.TrimSpace(os.Getenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN"))
 		if cfg.bearerToken == "" {
 			return transportConfig{}, WrapError(
-				"Missing auth token: set CLAWCHROME_CLI_HTTP_BEARER_TOKEN for http transport",
+				"Missing auth token: CLAWCHROME_CLI_HTTP_BEARER_TOKEN is empty for http transport",
 				ErrValidation,
 				"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN to the runtime API bearer token",
 			)
@@ -500,7 +689,7 @@ func checkBridgeHealth(state sessionState, cfg transportConfig) (bool, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		data, _ := io.ReadAll(resp.Body)
-		return false, errors.New(httpStatusMessage(resp.StatusCode, data))
+		return false, httpStatusError(resp.StatusCode, data, resp.Header, state, cfg, defaultRemoteHealthPath)
 	}
 	var payload struct {
 		Status string `json:"status"`
@@ -533,7 +722,7 @@ func postJSON(state sessionState, cfg transportConfig, path string, body any, ti
 		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return nil, errors.New(fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(data))))
+		return nil, httpStatusError(resp.StatusCode, data, resp.Header, state, cfg, path)
 	}
 	return data, nil
 }
