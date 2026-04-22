@@ -80,7 +80,7 @@ func runCommand(command string, args []string, full bool) (string, error) {
 	case "open":
 		return handleOpen(args, full)
 	case "snapshot":
-		return handleSnapshot(full)
+		return handleSnapshot(args, full)
 	case "screenshot":
 		return handleScreenshot(args)
 	case "click":
@@ -181,8 +181,24 @@ func handleOpen(args []string, full bool) (string, error) {
 	return formatPageOutput(snapshot.StripSnapshotHeader(snap), "open", url, full), nil
 }
 
-func handleSnapshot(full bool) (string, error) {
-	snap, err := callTool("take_snapshot", map[string]any{})
+func handleSnapshot(args []string, full bool) (string, error) {
+	parsed := parseSnapshotArgs(args)
+	if parsed.invalid != "" {
+		return "", client.WrapError("Unexpected snapshot argument: "+parsed.invalid, client.ErrValidation, "Run `clawchrome-cli snapshot --help` to see supported flags")
+	}
+
+	toolArgs := map[string]any{}
+	if parsed.form {
+		toolArgs["form"] = true
+	}
+	if parsed.text {
+		toolArgs["text"] = true
+	}
+	if full {
+		toolArgs["verbose"] = true
+	}
+
+	snap, err := callTool("take_snapshot", toolArgs)
 	if err != nil {
 		return "", err
 	}

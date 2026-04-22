@@ -11,7 +11,7 @@ import (
 const topHelp = `usage: clawchrome-cli [command] [args] [flags]
 
 commands:
-  open <url>, snapshot, screenshot <path>, click @<uid>, fill @<uid> <text>,
+  open <url>, snapshot [--form] [--text], screenshot <path>, click @<uid>, fill @<uid> <text>,
   type <text>, press <key>, scroll <dir>, back, wait <ms|text>,
   hover @<uid>, drag @<from> @<to>, fillform @<uid>=<val>..., dialog <action>,
   upload @<uid> <path>, pages, newpage <url>, selectpage <id>, closepage <id>,
@@ -54,14 +54,18 @@ examples:
   clawchrome-cli screenshot ./page.png
   clawchrome-cli screenshot ./element.png --uid @3
   clawchrome-cli screenshot ./full.png --full-page --format jpeg`,
-	"snapshot": `usage: clawchrome-cli snapshot [--full]
+	"snapshot": `usage: clawchrome-cli snapshot [--form] [--text] [--full]
 Capture the current page accessibility snapshot.
 
 flags:
-  --full  Show complete snapshot without truncation
+  --form  Request a snapshot filtered to form controls
+  --text  Request a snapshot filtered to readable text content
+  --full  Request the full accessibility tree and show output without truncation
 
 examples:
   clawchrome-cli snapshot
+  clawchrome-cli snapshot --form
+  clawchrome-cli snapshot --text
   clawchrome-cli snapshot --full`,
 	"click": `usage: clawchrome-cli click @<uid> [--full]
 Click an interactive element by its ref from the snapshot.
@@ -348,6 +352,12 @@ type fillFormArgs struct {
 	entries []map[string]string
 }
 
+type snapshotArgs struct {
+	form    bool
+	text    bool
+	invalid string
+}
+
 func getCommandHelp(command string) string {
 	return commandHelp[command]
 }
@@ -413,6 +423,22 @@ func parseScreenshotArgs(args []string) screenshotArgs {
 		fullPage: parsed.FullPage,
 		format:   parsed.Format,
 	}
+}
+
+func parseSnapshotArgs(args []string) snapshotArgs {
+	var parsed snapshotArgs
+	for _, arg := range args {
+		switch arg {
+		case "--form":
+			parsed.form = true
+		case "--text":
+			parsed.text = true
+		default:
+			parsed.invalid = arg
+			return parsed
+		}
+	}
+	return parsed
 }
 
 func ParsePagesList(text string) []PageInfo {

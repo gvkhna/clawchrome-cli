@@ -46,6 +46,13 @@ func TestGetCommandHelp(t *testing.T) {
 			t.Fatalf("resize help should not include --full")
 		}
 	})
+
+	t.Run("snapshot includes form and text filters", func(t *testing.T) {
+		help := getCommandHelp("snapshot")
+		if !strings.Contains(help, "--form") || !strings.Contains(help, "--text") {
+			t.Fatalf("snapshot help should include form and text filters, got %q", help)
+		}
+	})
 }
 
 func TestParseScreenshotArgs(t *testing.T) {
@@ -57,6 +64,18 @@ func TestParseScreenshotArgs(t *testing.T) {
 	got = parseScreenshotArgs([]string{"--full-page", "./shot.png"})
 	if got.filePath != "./shot.png" {
 		t.Fatalf("expected filePath to be discovered from positional arg, got %#v", got)
+	}
+}
+
+func TestParseSnapshotArgs(t *testing.T) {
+	got := parseSnapshotArgs([]string{"--form", "--text"})
+	if !got.form || !got.text || got.invalid != "" {
+		t.Fatalf("unexpected parse result: %#v", got)
+	}
+
+	got = parseSnapshotArgs([]string{"--unknown"})
+	if got.invalid != "--unknown" {
+		t.Fatalf("expected invalid flag, got %#v", got)
 	}
 }
 
@@ -124,6 +143,39 @@ func TestMainPagesOutputMatchesStructuredShape(t *testing.T) {
 	}
 	if !strings.Contains(output, "0,https://a.com/,false") || !strings.Contains(output, "1,https://b.com/,true") {
 		t.Fatalf("expected structured page rows, got %q", output)
+	}
+}
+
+func TestMainSnapshotPassesFilterArgs(t *testing.T) {
+	restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+		if name != "take_snapshot" {
+			t.Fatalf("unexpected tool %q with args %#v", name, args)
+		}
+		if args["form"] != true || args["text"] != true || args["verbose"] != true {
+			t.Fatalf("expected form, text, and verbose args, got %#v", args)
+		}
+		return "## Latest page snapshot\nRootWebArea \"Example\"\n  uid=1 textbox \"Search\"\n", nil
+	})
+	defer restore()
+
+	var stdout bytes.Buffer
+	exitCode := Main([]string{"snapshot", "--form", "--text", "--full"}, &stdout, &bytes.Buffer{})
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "refs: 1") {
+		t.Fatalf("expected formatted snapshot output, got %q", stdout.String())
+	}
+}
+
+func TestMainSnapshotRejectsUnexpectedArgs(t *testing.T) {
+	var stdout bytes.Buffer
+	exitCode := Main([]string{"snapshot", "extra"}, &stdout, &bytes.Buffer{})
+	if exitCode != 2 {
+		t.Fatalf("expected validation exit code 2, got %d", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "Unexpected snapshot argument: extra") {
+		t.Fatalf("expected validation message, got %q", stdout.String())
 	}
 }
 
