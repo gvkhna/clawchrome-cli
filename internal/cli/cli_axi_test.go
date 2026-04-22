@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -146,6 +147,10 @@ func TestAXIValidationErrorsAreScopedAndDoNotCallBackend(t *testing.T) {
 		{"video stop unexpected arg", []string{"video", "stop", "extra"}, "Unexpected", "usage: clawchrome-cli video"},
 		{"video unexpected full", []string{"video", "--full"}, "Unexpected", "usage: clawchrome-cli video"},
 		{"start unknown flag", []string{"start", "--bogus"}, "Unexpected", "usage: clawchrome-cli start"},
+		{"start missing token value", []string{"start", "--token"}, "Missing token value", "usage: clawchrome-cli start"},
+		{"start empty token value", []string{"start", "--token="}, "Missing token value", "usage: clawchrome-cli start"},
+		{"start missing agent name", []string{"start", "--agent-name"}, "Missing agent name", "usage: clawchrome-cli start"},
+		{"status unexpected arg", []string{"status", "extra"}, "Unexpected", "usage: clawchrome-cli status"},
 		{"stop unexpected arg", []string{"stop", "extra"}, "Unexpected", "usage: clawchrome-cli stop"},
 		{"version unexpected arg", []string{"version", "extra"}, "Unexpected", "usage: clawchrome-cli version"},
 		{"self-update unexpected arg", []string{"self-update", "v1.2.3", "extra"}, "Unexpected", "usage: clawchrome-cli self-update"},
@@ -211,6 +216,8 @@ func TestAXIRefArgumentsValidateBeforeBackendCalls(t *testing.T) {
 }
 
 func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "config"))
+
 	t.Run("http transport uses default target and missing token explains auth", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
@@ -224,7 +231,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		assertContainsAll(t, stdout, []string{
 			"CLAWCHROME_CLI_HTTP_BEARER_TOKEN",
 			"auth",
-			"empty",
+			"start --token",
 			"help[",
 		})
 		assertNotContainsAny(t, stdout, []string{"Missing target API URL"})
@@ -244,7 +251,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		assertContainsAll(t, stdout, []string{
 			"CLAWCHROME_CLI_HTTP_BEARER_TOKEN",
 			"auth",
-			"empty",
+			"start --token",
 			"help[",
 		})
 		assertQuietStderr(t, stderr)

@@ -81,6 +81,20 @@ func TestGetCommandHelp(t *testing.T) {
 		}
 	})
 
+	t.Run("start includes auth flags", func(t *testing.T) {
+		help := getCommandHelp("start")
+		if !strings.Contains(help, "--token <token>") || !strings.Contains(help, "--agent-name <name>") {
+			t.Fatalf("expected start help to include auth flags, got %q", help)
+		}
+	})
+
+	t.Run("status has help", func(t *testing.T) {
+		help := getCommandHelp("status")
+		if !strings.Contains(help, "status") || !strings.Contains(help, "auth status") {
+			t.Fatalf("expected status help, got %q", help)
+		}
+	})
+
 	t.Run("mouse help is grouped and has no full flag", func(t *testing.T) {
 		help := getCommandHelp("mouse")
 		if !strings.Contains(help, "mouse <action>") || !strings.Contains(help, "move <x> <y>") || !strings.Contains(help, "wheel <deltaX> <deltaY>") {
@@ -988,6 +1002,75 @@ func TestStartUsesRuntimeHTTPStartBrowserTool(t *testing.T) {
 	if !strings.Contains(stdout.String(), "status: ready") || !strings.Contains(stdout.String(), "port: 8091") {
 		t.Fatalf("unexpected start output: %q", stdout.String())
 	}
+}
+
+func TestStartSavesAuthFlags(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "stdio")
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "")
+
+	restoreEnsureBridge := stubEnsureBridge(t, func() (int, error) {
+		return 9224, nil
+	})
+	defer restoreEnsureBridge()
+	restoreUsesHTTPTransport := stubUsesHTTPTransport(t, func() bool {
+		return false
+	})
+	defer restoreUsesHTTPTransport()
+
+	var stdout bytes.Buffer
+	exitCode := Main([]string{"start", "--token", "saved-token", "--agent-name", "codex-worker"}, &stdout, &bytes.Buffer{})
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d; output:\n%s", exitCode, stdout.String())
+	}
+	assertContainsAll(t, stdout.String(), []string{
+		"status: ready",
+		"port: 9224",
+		"auth:",
+		"token: configured",
+		"source: config",
+		"agentName: codex-worker",
+	})
+	assertNotContainsAny(t, stdout.String(), []string{"saved-token"})
+
+	auth, err := client.GetAuthStatus()
+	if err != nil {
+		t.Fatalf("GetAuthStatus failed: %v", err)
+	}
+	if auth.Token != "configured" || auth.Source != "config" || auth.AgentName != "codex-worker" {
+		t.Fatalf("unexpected auth status: %#v", auth)
+	}
+}
+
+func TestStatusShowsAuthWithoutToken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_HTTP_URL", "")
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "")
+
+	if _, err := client.SaveAuthConfig("saved-token", "codex-worker"); err != nil {
+		t.Fatalf("SaveAuthConfig failed: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	exitCode := Main([]string{"status"}, &stdout, &bytes.Buffer{})
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d; output:\n%s", exitCode, stdout.String())
+	}
+	assertContainsAll(t, stdout.String(), []string{
+		"status:",
+		"transport: http",
+		`target: "https://www.clawchrome.com"`,
+		"auth:",
+		"token: configured",
+		"source: config",
+		"agentName: codex-worker",
+	})
+	assertNotContainsAny(t, stdout.String(), []string{"saved-token"})
 }
 
 func stubCallTool(t *testing.T, fn func(name string, args map[string]any) (string, error)) func() {

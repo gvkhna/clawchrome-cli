@@ -22,6 +22,8 @@ var (
 	callRuntimeHTTPTool         = client.CallRuntimeHTTPTool
 	ensureBridge                = client.EnsureBridge
 	getSessionSnapshotIfRunning = client.GetSessionSnapshotIfRunning
+	getClientStatus             = client.GetClientStatus
+	saveAuthConfig              = client.SaveAuthConfig
 	stopBridge                  = client.StopBridge
 	usesHTTPTransport           = client.UsesHTTPTransport
 	selfUpdate                  = func(currentVersion string, targetVersion string) (string, error) {
@@ -138,6 +140,8 @@ func runCommand(command string, args []string, full bool) (string, error) {
 		return handleVideo(args)
 	case "start":
 		return handleStart(args)
+	case "status":
+		return handleStatus(args)
 	case "stop":
 		return handleStop(args)
 	case "version":
@@ -175,16 +179,18 @@ func renderHome() string {
 }
 
 func handleStart(args []string) (string, error) {
-	var url string
-	switch len(args) {
-	case 0:
-	case 1:
-		if strings.HasPrefix(args[0], "-") {
-			return "", unexpectedArgError("start", args[0])
+	parsed, err := parseStartArgs(args)
+	if err != nil {
+		return "", err
+	}
+
+	var savedAuth *client.AuthConfigStatus
+	if parsed.saveAuth {
+		auth, err := saveAuthConfig(parsed.token, parsed.agentName)
+		if err != nil {
+			return "", err
 		}
-		url = args[0]
-	default:
-		return "", unexpectedArgError("start", args[1])
+		savedAuth = &auth
 	}
 
 	port, err := ensureBridge()
@@ -193,14 +199,112 @@ func handleStart(args []string) (string, error) {
 	}
 	if usesHTTPTransport() {
 		toolArgs := map[string]any{}
-		if url != "" {
-			toolArgs["url"] = url
+		if parsed.url != "" {
+			toolArgs["url"] = parsed.url
 		}
 		if _, err := callTool("start_browser", toolArgs); err != nil {
 			return "", err
 		}
 	}
-	return encode(map[string]any{"status": "ready", "port": port}), nil
+	payload := map[string]any{"status": "ready", "port": port}
+	if savedAuth != nil {
+		payload["auth"] = authStatusOutput(*savedAuth)
+	}
+	return encode(payload), nil
+}
+
+func handleStatus(args []string) (string, error) {
+	if err := requireNoArgs("status", args); err != nil {
+		return "", err
+	}
+	status, err := getClientStatus()
+	if err != nil {
+		return "", err
+	}
+	return encode(clientStatusOutput(status)), nil
+}
+
+type startArgs struct {
+	url          string
+	token        string
+	agentName    string
+	tokenSet     bool
+	agentNameSet bool
+	saveAuth     bool
+}
+
+func parseStartArgs(args []string) (startArgs, error) {
+	var parsed startArgs
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--token":
+			if i+1 >= len(args) {
+				return startArgs{}, validationError("start", "Missing token value")
+			}
+			i++
+			parsed.token = args[i]
+			parsed.tokenSet = true
+			parsed.saveAuth = true
+		case strings.HasPrefix(arg, "--token="):
+			parsed.token = strings.TrimPrefix(arg, "--token=")
+			parsed.tokenSet = true
+			parsed.saveAuth = true
+		case arg == "--agent-name":
+			if i+1 >= len(args) {
+				return startArgs{}, validationError("start", "Missing agent name")
+			}
+			i++
+			parsed.agentName = args[i]
+			parsed.agentNameSet = true
+			parsed.saveAuth = true
+		case strings.HasPrefix(arg, "--agent-name="):
+			parsed.agentName = strings.TrimPrefix(arg, "--agent-name=")
+			parsed.agentNameSet = true
+			parsed.saveAuth = true
+		case strings.HasPrefix(arg, "-"):
+			return startArgs{}, unexpectedArgError("start", arg)
+		default:
+			if parsed.url != "" {
+				return startArgs{}, unexpectedArgError("start", arg)
+			}
+			parsed.url = arg
+		}
+	}
+	if parsed.tokenSet && strings.TrimSpace(parsed.token) == "" {
+		return startArgs{}, validationError("start", "Missing token value")
+	}
+	if parsed.agentNameSet && strings.TrimSpace(parsed.agentName) == "" {
+		return startArgs{}, validationError("start", "Missing agent name")
+	}
+	if parsed.saveAuth && strings.TrimSpace(parsed.token) == "" && strings.TrimSpace(parsed.agentName) == "" {
+		return startArgs{}, validationError("start", "Missing auth value: provide --token or --agent-name")
+	}
+	return parsed, nil
+}
+
+func clientStatusOutput(status client.ClientStatus) map[string]any {
+	runtime := map[string]any{"transport": status.Status.Transport}
+	if status.Status.Target != "" {
+		runtime["target"] = status.Status.Target
+	}
+	return map[string]any{
+		"status": runtime,
+		"auth":   authStatusOutput(status.Auth),
+	}
+}
+
+func authStatusOutput(auth client.AuthConfigStatus) map[string]any {
+	output := map[string]any{
+		"token":        auth.Token,
+		"source":       auth.Source,
+		"configPath":   auth.ConfigPath,
+		"configExists": auth.ConfigExists,
+	}
+	if auth.AgentName != "" {
+		output["agentName"] = auth.AgentName
+	}
+	return output
 }
 
 func handleOpen(args []string, full bool) (string, error) {

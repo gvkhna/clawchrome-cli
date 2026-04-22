@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -129,7 +130,128 @@ func TestCallRuntimeHTTPToolRequiresHTTPTransportWithoutStartingBridge(t *testin
 	}
 }
 
+func TestHTTPTransportUsesSavedAuthConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "")
+
+	auth, err := SaveAuthConfig("saved-token", "codex-worker")
+	if err != nil {
+		t.Fatalf("SaveAuthConfig failed: %v", err)
+	}
+	if auth.Token != "configured" || auth.Source != authSourceConfig || auth.AgentName != "codex-worker" {
+		t.Fatalf("unexpected auth status: %#v", auth)
+	}
+	if !strings.HasPrefix(auth.ConfigPath, filepath.Join(home, "config", "clawchrome-cli")) {
+		t.Fatalf("expected config path under XDG_CONFIG_HOME, got %q", auth.ConfigPath)
+	}
+
+	var gotUserAgent string
+	var gotAgentName string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer saved-token" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		gotUserAgent = r.Header.Get("User-Agent")
+		gotAgentName = r.Header.Get("X-Clawchrome-Agent-Name")
+		switch r.URL.Path {
+		case "/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/call":
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": "ok"})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+
+	result, err := CallTool("list_pages", map[string]any{})
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("unexpected result: %q", result)
+	}
+	if !strings.Contains(gotUserAgent, "clawchrome-cli") || !strings.Contains(gotUserAgent, "codex-worker") {
+		t.Fatalf("expected user agent to include cli and agent name, got %q", gotUserAgent)
+	}
+	if gotAgentName != "codex-worker" {
+		t.Fatalf("unexpected agent header: %q", gotAgentName)
+	}
+}
+
+func TestHTTPTransportEnvTokenOverridesSavedAuthConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "")
+	if _, err := SaveAuthConfig("saved-token", "codex-worker"); err != nil {
+		t.Fatalf("SaveAuthConfig failed: %v", err)
+	}
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "env-token")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer env-token" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		if got := r.Header.Get("X-Clawchrome-Agent-Name"); got != "codex-worker" {
+			t.Fatalf("expected saved agent name header, got %q", got)
+		}
+		switch r.URL.Path {
+		case "/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+		case "/call":
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": "ok"})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+
+	if _, err := CallTool("list_pages", map[string]any{}); err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+	auth, err := GetAuthStatus()
+	if err != nil {
+		t.Fatalf("GetAuthStatus failed: %v", err)
+	}
+	if auth.Source != authSourceEnv || auth.Token != "configured" {
+		t.Fatalf("expected env auth source, got %#v", auth)
+	}
+}
+
+func TestGetClientStatusReportsAuthWithoutTokenValue(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_HTTP_URL", "")
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "")
+
+	if _, err := SaveAuthConfig("saved-token", "codex-worker"); err != nil {
+		t.Fatalf("SaveAuthConfig failed: %v", err)
+	}
+	status, err := GetClientStatus()
+	if err != nil {
+		t.Fatalf("GetClientStatus failed: %v", err)
+	}
+	if status.Status.Transport != transportHTTP || status.Status.Target != defaultRuntimeHTTPURL {
+		t.Fatalf("unexpected runtime status: %#v", status.Status)
+	}
+	if status.Auth.Token != "configured" || status.Auth.Source != authSourceConfig || status.Auth.AgentName != "codex-worker" {
+		t.Fatalf("unexpected auth status: %#v", status.Auth)
+	}
+}
+
 func TestHTTPTransportDefaultsToProductionURL(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
 	t.Setenv("CLAWCHROME_CLI_HTTP_URL", "")
 	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret-token")

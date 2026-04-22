@@ -80,6 +80,8 @@ type transportConfig struct {
 	mode        string
 	baseURL     string
 	bearerToken string
+	tokenSource string
+	agentName   string
 }
 
 var uidRefPattern = regexp.MustCompile(`(?i)\buid[=:\s]+@?([A-Za-z0-9_-]+)`)
@@ -524,9 +526,9 @@ func ensureHTTPSession(cfg transportConfig) (sessionState, error) {
 	}
 	if cfg.bearerToken == "" {
 		return sessionState{}, WrapError(
-			"Missing auth token: set CLAWCHROME_CLI_HTTP_BEARER_TOKEN for http transport",
+			"Missing auth token for http transport",
 			ErrValidation,
-			"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN to the runtime API bearer token",
+			"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN or run `clawchrome-cli start --token <token>`",
 		)
 	}
 
@@ -649,26 +651,30 @@ func loadTransportConfig() (transportConfig, error) {
 
 	cfg := transportConfig{mode: mode}
 	if mode == transportHTTP {
-		baseURL := strings.TrimSpace(os.Getenv("CLAWCHROME_CLI_HTTP_URL"))
-		if baseURL == "" {
-			baseURL = defaultRuntimeHTTPURL
-		}
-		baseURL = strings.TrimRight(baseURL, "/")
-		parsedURL, err := neturl.Parse(baseURL)
-		if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
-			return transportConfig{}, WrapError(
-				"Invalid CLAWCHROME_CLI_HTTP_URL override: expected an http or https URL",
-				ErrValidation,
-				"Example: CLAWCHROME_CLI_HTTP_URL=http://127.0.0.1:8091",
-			)
+		baseURL, err := resolveHTTPBaseURL()
+		if err != nil {
+			return transportConfig{}, err
 		}
 		cfg.baseURL = baseURL
 		cfg.bearerToken = strings.TrimSpace(os.Getenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN"))
+		cfg.tokenSource = authSourceEnv
+
+		authConfig, _, _, authErr := resolveStoredAuthConfig()
+		if authErr == nil {
+			cfg.agentName = authConfig.AgentName
+		}
+		if cfg.bearerToken == "" {
+			if authErr != nil {
+				return transportConfig{}, authErr
+			}
+			cfg.bearerToken = authConfig.Token
+			cfg.tokenSource = authSourceConfig
+		}
 		if cfg.bearerToken == "" {
 			return transportConfig{}, WrapError(
-				"Missing auth token: CLAWCHROME_CLI_HTTP_BEARER_TOKEN is empty for http transport",
+				"Missing auth token for http transport",
 				ErrValidation,
-				"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN to the runtime API bearer token",
+				"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN or run `clawchrome-cli start --token <token>`",
 			)
 		}
 	}
@@ -733,6 +739,14 @@ func setCommonHeaders(req *http.Request, state sessionState, cfg transportConfig
 	}
 	if cfg.mode == transportHTTP && cfg.bearerToken != "" {
 		req.Header.Set(defaultRemoteAuthHeader, "Bearer "+cfg.bearerToken)
+	}
+	if cfg.mode == transportHTTP {
+		userAgent := defaultConfigDirName
+		if cfg.agentName != "" {
+			userAgent += " agent=" + cfg.agentName
+			req.Header.Set("X-Clawchrome-Agent-Name", cfg.agentName)
+		}
+		req.Header.Set("User-Agent", userAgent)
 	}
 }
 

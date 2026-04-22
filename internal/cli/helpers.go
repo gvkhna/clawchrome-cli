@@ -15,7 +15,7 @@ commands:
   type <text>, press <key>, scroll <dir>, mouse <action>, back, forward, reload, wait <ms|text>,
   hover @<uid>, drag @<from> @<to>, fillform @<uid>=<val>..., dialog <action>,
   form <check|uncheck|select|upload>, pages, newpage <url>, selectpage <id>, closepage <id>,
-  resize <w> <h>, video <start|stop>, start, stop, version, self-update [version]
+  resize <w> <h>, video <start|stop>, start, status, stop, version, self-update [version]
 
 flags:
   --help, -v, -V, --version, --full
@@ -23,7 +23,7 @@ flags:
 environment:
   CLAWCHROME_CLI_TRANSPORT=stdio   Transport mode: stdio (default) or http
   CLAWCHROME_CLI_HTTP_URL=...      Optional runtime API URL override (default: https://www.clawchrome.com)
-  CLAWCHROME_CLI_HTTP_BEARER_TOKEN Auth bearer token when transport is http
+  CLAWCHROME_CLI_HTTP_BEARER_TOKEN Auth bearer token override when transport is http
   CLAWCHROME_CLI_HEADED=1          Run Chrome headed instead of headless
   CLAWCHROME_CLI_CHROME_ARGS=...   Forward additional Chrome flags
   CLAWCHROME_CLI_PORT=9224         Override bridge server port
@@ -184,15 +184,25 @@ args:
 examples:
   clawchrome-cli wait 2000
   clawchrome-cli wait "Submit"`,
-	"start": `usage: clawchrome-cli start [url]
+	"start": `usage: clawchrome-cli start [url] [--token <token>] [--agent-name <name>]
 Start the bridge server (launches headless Chrome).
 
 args:
   [url]  Optional URL to open when using the http runtime transport
 
+flags:
+  --token <token>       Save an HTTP bearer token in the user config directory
+  --agent-name <name>   Save an agent name sent with runtime HTTP requests
+
 examples:
   clawchrome-cli start
+  clawchrome-cli start --token <token> --agent-name codex-worker
   clawchrome-cli start https://example.com`,
+	"status": `usage: clawchrome-cli status
+Show local CLI transport and auth status without printing the token.
+
+examples:
+  clawchrome-cli status`,
 	"stop": `usage: clawchrome-cli stop
 Stop the bridge server and close the browser.
 
@@ -379,6 +389,7 @@ var commandOrder = []string{
 	"resize",
 	"video",
 	"start",
+	"status",
 	"stop",
 	"version",
 	"self-update",
