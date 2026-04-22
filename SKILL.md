@@ -44,7 +44,7 @@ Element commands use snapshot refs such as `@e12` or `@e27`. Run `clawchrome-cli
 - `back`, `forward`, `reload`: browser history and reload actions.
 - `hover @eNN` and `drag @eNN @eNN`: pointer interactions by snapshot ref.
 - `fillform @eNN=<value>...`: fill several fields in one command.
-- `form check|uncheck|select|upload ...`: targeted checkbox, select, and file upload helpers.
+- `form clear|check|uncheck|select|upload ...`: targeted input clearing, checkbox, select, and file upload helpers.
 - `dialog accept|dismiss [text]`: handle alerts, confirms, and prompts.
 - `resize <width> <height>`: set viewport size.
 - `video start [path]` and `video stop`: record and stop page video.
@@ -94,6 +94,7 @@ clawchrome-cli status
 Handle forms and dialogs:
 
 ```sh
+clawchrome-cli form clear @e17
 clawchrome-cli form check @e18
 clawchrome-cli form select @e19 "United States"
 clawchrome-cli form upload @e20 ./avatar.png

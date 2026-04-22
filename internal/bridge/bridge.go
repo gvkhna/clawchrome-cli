@@ -197,12 +197,12 @@ func Run(ctx context.Context) error {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
-		text, err := callTool(client, name, args)
+		result, err := callToolJSON(client, name, args)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"result": text})
+		writeJSON(w, http.StatusOK, map[string]any{"result": result})
 	})
 
 	server := &http.Server{
@@ -235,18 +235,18 @@ func Run(ctx context.Context) error {
 	return nil
 }
 
-func callTool(client *mcpClient, name string, args map[string]any) (string, error) {
+func callToolJSON(client *mcpClient, name string, args map[string]any) (json.RawMessage, error) {
 	switch name {
 	case "scroll_page":
 		return callScrollPage(client, args)
 	case "wait_duration":
 		return callWaitDuration(args)
 	default:
-		return client.CallTool(name, args)
+		return client.CallToolJSON(name, args)
 	}
 }
 
-func callScrollPage(client *mcpClient, args map[string]any) (string, error) {
+func callScrollPage(client *mcpClient, args map[string]any) (json.RawMessage, error) {
 	direction, _ := args["direction"].(string)
 	key, ok := map[string]string{
 		"up":     "PageUp",
@@ -255,26 +255,32 @@ func callScrollPage(client *mcpClient, args map[string]any) (string, error) {
 		"bottom": "End",
 	}[direction]
 	if !ok {
-		return "", fmt.Errorf("invalid scroll_page direction %q", direction)
+		return nil, fmt.Errorf("invalid scroll_page direction %q", direction)
 	}
-	if _, err := client.CallTool("press_key", map[string]any{"key": key}); err != nil {
-		return "", err
+	if _, err := client.CallToolJSON("press_key", map[string]any{"key": key}); err != nil {
+		return nil, err
 	}
-	return "", nil
+	return json.Marshal(map[string]any{
+		"ok":        true,
+		"direction": direction,
+	})
 }
 
-func callWaitDuration(args map[string]any) (string, error) {
+func callWaitDuration(args map[string]any) (json.RawMessage, error) {
 	value, ok := args["milliseconds"]
 	if !ok {
-		return "", errors.New("missing milliseconds")
+		return nil, errors.New("missing milliseconds")
 	}
 
 	ms, ok := toInt(value)
 	if !ok || ms < 0 {
-		return "", fmt.Errorf("invalid milliseconds value %v", value)
+		return nil, fmt.Errorf("invalid milliseconds value %v", value)
 	}
 	time.Sleep(time.Duration(ms) * time.Millisecond)
-	return "", nil
+	return json.Marshal(map[string]any{
+		"ok":           true,
+		"milliseconds": ms,
+	})
 }
 
 func toInt(value any) (int, bool) {
@@ -370,27 +376,56 @@ func (c *mcpClient) ListTools() (*toolListResult, error) {
 }
 
 func (c *mcpClient) CallTool(name string, args map[string]any) (string, error) {
+	raw, err := c.CallToolJSON(name, args)
+	if err != nil {
+		return "", err
+	}
+	return toolResultText(raw), nil
+}
+
+func (c *mcpClient) CallToolJSON(name string, args map[string]any) (json.RawMessage, error) {
 	raw, err := c.call("tools/call", map[string]any{
 		"name":      name,
 		"arguments": args,
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
+	return append(json.RawMessage(nil), raw...), nil
+}
 
+func toolResultText(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
 	var result struct {
 		Content []toolContentBlock `json:"content"`
+		Text    string             `json:"text"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return "", err
-	}
-	parts := make([]string, 0)
-	for _, block := range result.Content {
-		if block.Type == "text" && block.Text != "" {
-			parts = append(parts, block.Text)
+	if err := json.Unmarshal(raw, &result); err == nil {
+		if strings.TrimSpace(result.Text) != "" {
+			return result.Text
+		}
+		parts := make([]string, 0)
+		for _, block := range result.Content {
+			if block.Type == "text" && block.Text != "" {
+				parts = append(parts, block.Text)
+			}
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
 		}
 	}
-	return strings.Join(parts, "\n"), nil
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err == nil {
+		return compact.String()
+	}
+	return string(raw)
 }
 
 func (c *mcpClient) notify(method string, params any) error {

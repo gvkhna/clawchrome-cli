@@ -127,6 +127,8 @@ func TestAXIValidationErrorsAreScopedAndDoNotCallBackend(t *testing.T) {
 		{"dialog invalid action", []string{"dialog", "close"}, "Missing or invalid action", "usage: clawchrome-cli dialog"},
 		{"form missing action", []string{"form"}, "Missing form action", "usage: clawchrome-cli form"},
 		{"form invalid action", []string{"form", "toggle"}, "Unknown form action", "usage: clawchrome-cli form"},
+		{"form clear missing ref", []string{"form", "clear"}, "Missing element ref", "usage: clawchrome-cli form"},
+		{"form clear unexpected arg", []string{"form", "clear", "@1", "extra"}, "Unexpected", "usage: clawchrome-cli form"},
 		{"form check missing ref", []string{"form", "check"}, "Missing element ref", "usage: clawchrome-cli form"},
 		{"form check unexpected arg", []string{"form", "check", "@1", "extra"}, "Unexpected", "usage: clawchrome-cli form"},
 		{"form select missing value", []string{"form", "select", "@2"}, "Missing select value", "usage: clawchrome-cli form"},

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,7 +108,7 @@ func TestGetCommandHelp(t *testing.T) {
 
 	t.Run("form groups control actions and includes full", func(t *testing.T) {
 		help := getCommandHelp("form")
-		if !strings.Contains(help, "form <action>") || !strings.Contains(help, "check @<uid>") || !strings.Contains(help, "upload @<uid> <path>") {
+		if !strings.Contains(help, "form <action>") || !strings.Contains(help, "clear @<uid>") || !strings.Contains(help, "check @<uid>") || !strings.Contains(help, "upload @<uid> <path>") {
 			t.Fatalf("expected form help to describe grouped actions, got %q", help)
 		}
 		if !strings.Contains(help, "--full") {
@@ -148,14 +149,33 @@ func TestParseSnapshotArgs(t *testing.T) {
 }
 
 func TestParsePagesList(t *testing.T) {
-	got := parsePagesList("## Pages\n0: https://a.com/\n1: https://b.com/ [selected]")
+	got := parsePagesList("## Pages\n1001: https://a.com/ window=501\n1002: https://b.com/ [selected] window=502")
 	if len(got) != 2 {
 		t.Fatalf("expected 2 pages, got %#v", got)
 	}
-	if got[0].id != 0 || got[0].url != "https://a.com/" || got[0].selected {
+	if got[0].id != 1001 || got[0].windowID != 501 || got[0].url != "https://a.com/" || got[0].selected {
 		t.Fatalf("unexpected first page: %#v", got[0])
 	}
-	if got[1].id != 1 || got[1].url != "https://b.com/" || !got[1].selected {
+	if got[1].id != 1002 || got[1].windowID != 502 || got[1].url != "https://b.com/" || !got[1].selected {
+		t.Fatalf("unexpected second page: %#v", got[1])
+	}
+}
+
+func TestParsePagesResultUsesStructuredPages(t *testing.T) {
+	raw := mustJSON(t, map[string]any{
+		"pages": []map[string]any{
+			{"pageId": 1001, "url": "https://a.com/", "selected": false, "windowId": 501},
+			{"pageId": 1002, "url": "https://b.com/", "selected": true, "windowId": 502},
+		},
+	})
+	got := parsePagesResult(raw)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 pages, got %#v", got)
+	}
+	if got[0].id != 1001 || got[0].windowID != 501 || got[0].url != "https://a.com/" || got[0].selected {
+		t.Fatalf("unexpected first page: %#v", got[0])
+	}
+	if got[1].id != 1002 || got[1].windowID != 502 || got[1].url != "https://b.com/" || !got[1].selected {
 		t.Fatalf("unexpected second page: %#v", got[1])
 	}
 }
@@ -357,11 +377,16 @@ func TestMainScreenshotResolvesOutputPath(t *testing.T) {
 }
 
 func TestMainPagesOutputMatchesStructuredShape(t *testing.T) {
-	restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+	restore := stubCallToolJSON(t, func(name string, args map[string]any) (json.RawMessage, error) {
 		if name != "list_pages" {
 			t.Fatalf("unexpected tool %q with args %#v", name, args)
 		}
-		return "## Pages\n0: https://a.com/\n1: https://b.com/ [selected]", nil
+		return mustJSON(t, map[string]any{
+			"pages": []map[string]any{
+				{"pageId": 1001, "url": "https://a.com/", "selected": false, "windowId": 501},
+				{"pageId": 1002, "url": "https://b.com/", "selected": true, "windowId": 502},
+			},
+		}), nil
 	})
 	defer restore()
 
@@ -372,10 +397,10 @@ func TestMainPagesOutputMatchesStructuredShape(t *testing.T) {
 	}
 
 	output := stdout.String()
-	if !strings.Contains(output, "pages[2]{id,url,selected}:") {
+	if !strings.Contains(output, "pages[2]{id,window,url,selected}:") {
 		t.Fatalf("expected structured pages header, got %q", output)
 	}
-	if !strings.Contains(output, "0,https://a.com/,false") || !strings.Contains(output, "1,https://b.com/,true") {
+	if !strings.Contains(output, "1001,501,https://a.com/,false") || !strings.Contains(output, "1002,502,https://b.com/,true") {
 		t.Fatalf("expected structured page rows, got %q", output)
 	}
 }
@@ -415,13 +440,17 @@ func TestMainSnapshotRejectsUnexpectedArgs(t *testing.T) {
 
 func TestMainClosePageNoOpWhenLastPageOpen(t *testing.T) {
 	var calls []string
-	restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+	restore := stubCallToolJSON(t, func(name string, args map[string]any) (json.RawMessage, error) {
 		calls = append(calls, name)
 		if name == "list_pages" {
-			return "## Pages\n1: https://example.com/ [selected]", nil
+			return mustJSON(t, map[string]any{
+				"pages": []map[string]any{
+					{"pageId": 1001, "url": "https://example.com/", "selected": true, "windowId": 501},
+				},
+			}), nil
 		}
 		t.Fatalf("unexpected tool %q with args %#v", name, args)
-		return "", nil
+		return nil, nil
 	})
 	defer restore()
 
@@ -445,32 +474,37 @@ func TestMainClosePageNoOpWhenLastPageOpen(t *testing.T) {
 
 func TestMainClosePageClosesWhenMultiplePagesOpen(t *testing.T) {
 	var calls []string
-	restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+	restore := stubCallToolJSON(t, func(name string, args map[string]any) (json.RawMessage, error) {
 		calls = append(calls, name)
 		switch name {
 		case "list_pages":
-			return "## Pages\n0: https://a.com/\n1: https://b.com/ [selected]", nil
+			return mustJSON(t, map[string]any{
+				"pages": []map[string]any{
+					{"pageId": 1001, "url": "https://a.com/", "selected": false, "windowId": 501},
+					{"pageId": 1002, "url": "https://b.com/", "selected": true, "windowId": 502},
+				},
+			}), nil
 		case "close_page":
-			if args["pageId"] != 1 {
+			if args["pageId"] != 1002 {
 				t.Fatalf("unexpected close_page args: %#v", args)
 			}
-			return "", nil
+			return mustJSON(t, map[string]any{"ok": true}), nil
 		default:
 			t.Fatalf("unexpected tool %q with args %#v", name, args)
-			return "", nil
+			return nil, nil
 		}
 	})
 	defer restore()
 
 	var stdout bytes.Buffer
-	exitCode := Main([]string{"closepage", "1"}, &stdout, &bytes.Buffer{})
+	exitCode := Main([]string{"closepage", "1002"}, &stdout, &bytes.Buffer{})
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
 	}
 	if strings.Join(calls, ",") != "list_pages,close_page" {
 		t.Fatalf("unexpected call sequence: %#v", calls)
 	}
-	if !strings.Contains(stdout.String(), "status: closed") || !strings.Contains(stdout.String(), "pageId: 1") {
+	if !strings.Contains(stdout.String(), "status: closed") || !strings.Contains(stdout.String(), "pageId: 1002") {
 		t.Fatalf("expected closed output, got %q", stdout.String())
 	}
 }
@@ -698,6 +732,28 @@ func TestMainForwardAndReloadUseNavigatePage(t *testing.T) {
 
 func TestMainFormActionsUseCompatibilityTools(t *testing.T) {
 	snapshotText := "ok\n## Latest page snapshot\nRootWebArea \"Example\"\n  uid=1 checkbox \"Terms\"\n"
+
+	t.Run("clear uses fill empty value", func(t *testing.T) {
+		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+			if name != "fill" {
+				t.Fatalf("unexpected tool %q with args %#v", name, args)
+			}
+			if args["uid"] != "4" || args["value"] != "" || args["includeSnapshot"] != true {
+				t.Fatalf("unexpected fill args: %#v", args)
+			}
+			return snapshotText, nil
+		})
+		defer restore()
+
+		var stdout bytes.Buffer
+		exitCode := Main([]string{"form", "clear", "@4"}, &stdout, &bytes.Buffer{})
+		if exitCode != 0 {
+			t.Fatalf("expected exit code 0, got %d", exitCode)
+		}
+		if !strings.Contains(stdout.String(), "snapshot:") {
+			t.Fatalf("expected snapshot output, got %q", stdout.String())
+		}
+	})
 
 	t.Run("check uses fill_form checkbox true", func(t *testing.T) {
 		restore := stubCallTool(t, func(name string, args map[string]any) (string, error) {
@@ -1076,10 +1132,50 @@ func TestStatusShowsAuthWithoutToken(t *testing.T) {
 func stubCallTool(t *testing.T, fn func(name string, args map[string]any) (string, error)) func() {
 	t.Helper()
 	prev := callTool
+	prevJSON := callToolJSON
 	callTool = fn
+	callToolJSON = func(name string, args map[string]any) (json.RawMessage, error) {
+		text, err := fn(name, args)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := json.Marshal(text)
+		if err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
 	return func() {
 		callTool = prev
+		callToolJSON = prevJSON
 	}
+}
+
+func stubCallToolJSON(t *testing.T, fn func(name string, args map[string]any) (json.RawMessage, error)) func() {
+	t.Helper()
+	prev := callTool
+	prevJSON := callToolJSON
+	callToolJSON = fn
+	callTool = func(name string, args map[string]any) (string, error) {
+		raw, err := fn(name, args)
+		if err != nil {
+			return "", err
+		}
+		return client.CallToolResultText(raw), nil
+	}
+	return func() {
+		callTool = prev
+		callToolJSON = prevJSON
+	}
+}
+
+func mustJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal json fixture: %v", err)
+	}
+	return raw
 }
 
 func stubCallRuntimeHTTPTool(t *testing.T, fn func(name string, args map[string]any) (client.RuntimeHTTPToolResponse, error)) func() {

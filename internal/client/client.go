@@ -118,9 +118,17 @@ func UsesHTTPTransport() bool {
 }
 
 func CallTool(name string, args map[string]any) (string, error) {
-	state, cfg, err := ensureSession()
+	result, err := CallToolJSON(name, args)
 	if err != nil {
 		return "", err
+	}
+	return CallToolResultText(result), nil
+}
+
+func CallToolJSON(name string, args map[string]any) (json.RawMessage, error) {
+	state, cfg, err := ensureSession()
+	if err != nil {
+		return nil, err
 	}
 
 	payload, err := postJSON(state, cfg, defaultRemoteCallPath, map[string]any{
@@ -128,20 +136,88 @@ func CallTool(name string, args map[string]any) (string, error) {
 		"args": args,
 	}, defaultCallTimeout)
 	if err != nil {
-		return "", mapTransportError(err)
+		return nil, mapTransportError(err)
 	}
 
 	var response struct {
-		Result string `json:"result"`
-		Error  string `json:"error"`
+		Result json.RawMessage `json:"result"`
+		Error  string          `json:"error"`
 	}
 	if err := json.Unmarshal(payload, &response); err != nil {
-		return "", err
+		return nil, err
 	}
 	if response.Error != "" {
-		return "", mapError(response.Error)
+		return nil, mapError(response.Error)
 	}
-	return response.Result, nil
+	if len(response.Result) == 0 {
+		return json.RawMessage(`null`), nil
+	}
+	return append(json.RawMessage(nil), response.Result...), nil
+}
+
+func CallToolResultText(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		if value, ok := rawObjectString(obj, "text"); ok {
+			return value
+		}
+		if value, ok := rawObjectString(obj, "snapshotYaml"); ok {
+			return value
+		}
+		if value, ok := rawObjectString(obj, "message"); ok {
+			return value
+		}
+		if contentRaw, ok := obj["content"]; ok {
+			if value := textFromContentBlocks(contentRaw); value != "" {
+				return value
+			}
+		}
+	}
+
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err == nil {
+		return compact.String()
+	}
+	return string(raw)
+}
+
+func rawObjectString(obj map[string]json.RawMessage, key string) (string, bool) {
+	raw, ok := obj[key]
+	if !ok {
+		return "", false
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, strings.TrimSpace(value) != ""
+}
+
+func textFromContentBlocks(raw json.RawMessage) string {
+	var content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return ""
+	}
+	parts := make([]string, 0, len(content))
+	for _, block := range content {
+		if strings.EqualFold(strings.TrimSpace(block.Type), "text") && strings.TrimSpace(block.Text) != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func CallRuntimeHTTPTool(name string, args map[string]any) (RuntimeHTTPToolResponse, error) {
@@ -197,12 +273,13 @@ func GetSessionSnapshotIfRunning() (string, bool) {
 		return "", false
 	}
 	var response struct {
-		Result string `json:"result"`
+		Result json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(payload, &response); err != nil {
 		return "", false
 	}
-	return response.Result, response.Result != ""
+	text := CallToolResultText(response.Result)
+	return text, text != ""
 }
 
 func StopBridge() bool {

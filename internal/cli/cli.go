@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -19,6 +20,7 @@ var Version = "0.1.0-dev"
 
 var (
 	callTool                    = client.CallTool
+	callToolJSON                = client.CallToolJSON
 	callRuntimeHTTPTool         = client.CallRuntimeHTTPTool
 	ensureBridge                = client.EnsureBridge
 	getSessionSnapshotIfRunning = client.GetSessionSnapshotIfRunning
@@ -791,6 +793,8 @@ func handleForm(args []string, full bool) (string, error) {
 
 	action := strings.ToLower(strings.TrimSpace(args[0]))
 	switch action {
+	case "clear":
+		return handleFormClear(args[1:], full)
 	case "check":
 		return handleFormCheck(args[1:], true, full)
 	case "uncheck":
@@ -805,6 +809,24 @@ func handleForm(args []string, full bool) (string, error) {
 		}
 		return "", validationError("form", "Unknown form action: "+args[0])
 	}
+}
+
+func handleFormClear(args []string, full bool) (string, error) {
+	if len(args) == 0 {
+		return "", validationError("form", "Missing element ref")
+	}
+	if len(args) > 1 {
+		return "", unexpectedArgError("form", args[1])
+	}
+	uid, err := validateRefArg("form", args[0])
+	if err != nil {
+		return "", err
+	}
+	snap, err := callWithSnapshot("fill", map[string]any{"uid": uid, "value": ""})
+	if err != nil {
+		return "", err
+	}
+	return formatPageOutput(snap, "form clear @"+uid, "", full), nil
 }
 
 func handleFormCheck(args []string, checked bool, full bool) (string, error) {
@@ -887,22 +909,22 @@ func handlePages(args []string) (string, error) {
 	if err := requireNoArgs("pages", args); err != nil {
 		return "", err
 	}
-	result, err := callTool("list_pages", map[string]any{})
+	result, err := callToolJSON("list_pages", map[string]any{})
 	if err != nil {
 		return "", err
 	}
-	pages := parsePagesList(result)
+	pages := parsePagesResult(result)
 	if len(pages) == 0 {
 		return "pages: 0 pages open", nil
 	}
 
 	rows := make([]string, 0, len(pages))
 	for _, page := range pages {
-		rows = append(rows, fmt.Sprintf("  %d,%s,%t", page.id, page.url, page.selected))
+		rows = append(rows, fmt.Sprintf("  %d,%d,%s,%t", page.id, page.windowID, page.url, page.selected))
 	}
 
 	return joinBlocks(
-		fmt.Sprintf("pages[%d]{id,url,selected}:\n%s", len(pages), strings.Join(rows, "\n")),
+		fmt.Sprintf("pages[%d]{id,window,url,selected}:\n%s", len(pages), strings.Join(rows, "\n")),
 		renderHelp([]string{
 			"Run `clawchrome-cli selectpage <id>` to switch tabs",
 			"Run `clawchrome-cli newpage <url>` to open a new tab",
@@ -984,11 +1006,11 @@ func handleClosePage(args []string) (string, error) {
 		return "", validationError("closepage", "Invalid page ID: "+id)
 	}
 
-	before, err := callTool("list_pages", map[string]any{})
+	before, err := callToolJSON("list_pages", map[string]any{})
 	if err != nil {
 		return "", err
 	}
-	if len(parsePagesList(before)) <= 1 {
+	if len(parsePagesResult(before)) <= 1 {
 		return joinBlocks(
 			encode(map[string]any{"status": "cannot close the last open page (no-op)"}),
 			renderHelp([]string{
@@ -1061,13 +1083,13 @@ func handleVideoStart(args []string) (string, error) {
 		return "", err
 	}
 	toolArgs := map[string]any{"path": path}
-	result, err := callTool("screencast_start", toolArgs)
+	result, err := callToolJSON("screencast_start", toolArgs)
 	if err != nil {
 		return "", outputPathOperationError("start video recording", path, err)
 	}
 	payload := map[string]any{"video": map[string]any{"status": "started", "path": path}}
-	if strings.TrimSpace(result) != "" {
-		payload["video"].(map[string]any)["result"] = strings.TrimSpace(result)
+	if message := messageFromToolResult(result); message != "" {
+		payload["video"].(map[string]any)["result"] = message
 	}
 	return encode(payload), nil
 }
@@ -1076,13 +1098,13 @@ func handleVideoStop(args []string) (string, error) {
 	if err := requireNoArgs("video", args); err != nil {
 		return "", err
 	}
-	result, err := callTool("screencast_stop", map[string]any{})
+	result, err := callToolJSON("screencast_stop", map[string]any{})
 	if err != nil {
 		return "", err
 	}
 	payload := map[string]any{"video": map[string]any{"status": "stopped"}}
-	if strings.TrimSpace(result) != "" {
-		payload["video"].(map[string]any)["result"] = strings.TrimSpace(result)
+	if message := messageFromToolResult(result); message != "" {
+		payload["video"].(map[string]any)["result"] = message
 	}
 	return encode(payload), nil
 }
@@ -1145,19 +1167,81 @@ func callWithSnapshot(name string, args map[string]any) (string, error) {
 	}
 	callArgs["includeSnapshot"] = true
 
-	result, err := callTool(name, callArgs)
+	result, err := callToolJSON(name, callArgs)
 	if err != nil {
 		return "", err
 	}
-	if parsed := parseSnapshotFromResponse(result); parsed != "" {
+	if parsed := snapshotFromToolResult(result); parsed != "" {
 		return snapshot.StripSnapshotHeader(parsed), nil
 	}
 
-	fallback, err := callTool("take_snapshot", map[string]any{})
+	fallback, err := callToolJSON("take_snapshot", map[string]any{})
 	if err != nil {
 		return "", err
 	}
-	return snapshot.StripSnapshotHeader(fallback), nil
+	return snapshot.StripSnapshotHeader(snapshotFromToolResult(fallback)), nil
+}
+
+func snapshotFromToolResult(raw json.RawMessage) string {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var legacy string
+	if err := json.Unmarshal(raw, &legacy); err == nil {
+		if parsed := parseSnapshotFromResponse(legacy); parsed != "" {
+			return parsed
+		}
+		return legacy
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	for _, key := range []string{"snapshotYaml", "text"} {
+		if value := rawStringField(obj, key); value != "" {
+			return value
+		}
+	}
+	if dataRaw, ok := obj["data"]; ok {
+		if value := snapshotFromToolResult(dataRaw); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func rawStringField(obj map[string]json.RawMessage, key string) string {
+	raw, ok := obj[key]
+	if !ok {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
+func messageFromToolResult(raw json.RawMessage) string {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var legacy string
+	if err := json.Unmarshal(raw, &legacy); err == nil {
+		return strings.TrimSpace(legacy)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	for _, key := range []string{"message", "text"} {
+		if value := rawStringField(obj, key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func parseSnapshotFromResponse(text string) string {

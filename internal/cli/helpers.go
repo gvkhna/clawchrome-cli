@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gvkhna/clawchrome-cli/internal/snapshot"
@@ -14,7 +16,7 @@ commands:
   open <url>, snapshot [--form] [--text], screenshot [path], click @<uid>, fill @<uid> <text>,
   type <text>, press <key>, scroll <dir>, mouse <action>, back, forward, reload, wait <ms|text>,
   hover @<uid>, drag @<from> @<to>, fillform @<uid>=<val>..., dialog <action>,
-  form <check|uncheck|select|upload>, pages, newpage <url>, selectpage <id>, closepage <id>,
+  form <clear|check|uncheck|select|upload>, pages, newpage <url>, selectpage <id>, closepage <id>,
   resize <w> <h>, video <start|stop>, start, status, stop, version, self-update [version]
 
 flags:
@@ -330,6 +332,7 @@ examples:
 Perform a targeted form control action.
 
 args:
+  clear @<uid>           Clear an input or text area
   check @<uid>            Check a checkbox or radio control
   uncheck @<uid>          Uncheck a checkbox control
   select @<uid> <value>   Select an option by value or label
@@ -339,6 +342,7 @@ flags:
   --full  Show complete snapshot without truncation
 
 examples:
+  clawchrome-cli form clear @2
   clawchrome-cli form check @3
   clawchrome-cli form select @4 "United States"
   clawchrome-cli form upload @5 ./photo.jpg`,
@@ -412,12 +416,14 @@ type ScreenshotArgs struct {
 
 type PageInfo struct {
 	ID       int
+	WindowID int
 	URL      string
 	Selected bool
 }
 
 type pageInfo struct {
 	id       int
+	windowID int
 	url      string
 	selected bool
 }
@@ -556,27 +562,169 @@ func ParsePagesList(text string) []PageInfo {
 	internal := parsePagesList(text)
 	pages := make([]PageInfo, 0, len(internal))
 	for _, page := range internal {
-		pages = append(pages, PageInfo{ID: page.id, URL: page.url, Selected: page.selected})
+		pages = append(pages, PageInfo{ID: page.id, WindowID: page.windowID, URL: page.url, Selected: page.selected})
 	}
 	return pages
+}
+
+func ParsePagesResult(raw json.RawMessage) []PageInfo {
+	internal := parsePagesResult(raw)
+	pages := make([]PageInfo, 0, len(internal))
+	for _, page := range internal {
+		pages = append(pages, PageInfo{ID: page.id, WindowID: page.windowID, URL: page.url, Selected: page.selected})
+	}
+	return pages
+}
+
+func parsePagesResult(raw json.RawMessage) []pageInfo {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var legacy string
+	if err := json.Unmarshal(raw, &legacy); err == nil {
+		return parsePagesList(legacy)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil
+	}
+	if pages := parsePageArray(obj["pages"], cliIntValue(obj["activePageId"])); len(pages) > 0 {
+		return pages
+	}
+	if structured, ok := cliMapValue(obj["structuredContent"]); ok {
+		if pages := parsePageArray(structured["pages"], cliIntValue(structured["activePageId"])); len(pages) > 0 {
+			return pages
+		}
+	}
+	return parseTabArray(obj["tabs"], strings.TrimSpace(cliStringValue(obj["activeId"])))
+}
+
+func parsePageArray(raw any, activePageID int) []pageInfo {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	pages := make([]pageInfo, 0, len(items))
+	for _, item := range items {
+		obj, ok := cliMapValue(item)
+		if !ok {
+			continue
+		}
+		id := firstPositiveCLIInt(obj["pageId"], obj["id"], obj["tabId"])
+		if id <= 0 {
+			continue
+		}
+		page := pageInfo{
+			id:       id,
+			windowID: firstPositiveCLIInt(obj["windowId"]),
+			url:      strings.TrimSpace(cliStringValue(obj["url"])),
+			selected: cliBoolValue(obj["selected"]) || (activePageID > 0 && id == activePageID),
+		}
+		pages = append(pages, page)
+	}
+	return pages
+}
+
+func parseTabArray(raw any, activeID string) []pageInfo {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	pages := make([]pageInfo, 0, len(items))
+	for _, item := range items {
+		obj, ok := cliMapValue(item)
+		if !ok {
+			continue
+		}
+		id := firstPositiveCLIInt(obj["pageId"], obj["tabId"])
+		if id <= 0 {
+			continue
+		}
+		handle := strings.TrimSpace(cliStringValue(obj["id"]))
+		page := pageInfo{
+			id:       id,
+			windowID: firstPositiveCLIInt(obj["windowId"]),
+			url:      strings.TrimSpace(cliStringValue(obj["url"])),
+			selected: cliBoolValue(obj["focused"]) || (handle != "" && handle == activeID),
+		}
+		pages = append(pages, page)
+	}
+	return pages
+}
+
+func cliMapValue(value any) (map[string]any, bool) {
+	obj, ok := value.(map[string]any)
+	return obj, ok
+}
+
+func firstPositiveCLIInt(values ...any) int {
+	for _, value := range values {
+		if out := cliIntValue(value); out > 0 {
+			return out
+		}
+	}
+	return 0
+}
+
+func cliIntValue(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		if typed == float64(int(typed)) {
+			return int(typed)
+		}
+	case json.Number:
+		parsed, err := typed.Int64()
+		if err == nil {
+			return int(parsed)
+		}
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func cliStringValue(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func cliBoolValue(value any) bool {
+	typed, _ := value.(bool)
+	return typed
 }
 
 func parsePagesList(text string) []pageInfo {
 	pages := make([]pageInfo, 0)
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
-		var (
-			id       int
-			url      string
-			selected string
-		)
-		if _, err := fmt.Sscanf(line, "%d: %s %s", &id, &url, &selected); err == nil {
-			pages = append(pages, pageInfo{id: id, url: url, selected: selected == "[selected]"})
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !strings.HasSuffix(fields[0], ":") {
 			continue
 		}
-		if _, err := fmt.Sscanf(line, "%d: %s", &id, &url); err == nil {
-			pages = append(pages, pageInfo{id: id, url: url})
+		id, err := strconv.Atoi(strings.TrimSuffix(fields[0], ":"))
+		if err != nil {
+			continue
 		}
+		page := pageInfo{id: id, url: fields[1]}
+		for _, token := range fields[2:] {
+			switch {
+			case token == "[selected]":
+				page.selected = true
+			case strings.HasPrefix(token, "window="):
+				page.windowID, _ = strconv.Atoi(strings.TrimPrefix(token, "window="))
+			case strings.HasPrefix(token, "windowId="):
+				page.windowID, _ = strconv.Atoi(strings.TrimPrefix(token, "windowId="))
+			}
+		}
+		pages = append(pages, page)
 	}
 	return pages
 }
@@ -589,11 +737,11 @@ func FormatPagesOutput(text string) string {
 
 	rows := make([]string, 0, len(pages))
 	for _, page := range pages {
-		rows = append(rows, fmt.Sprintf("  %d,%s,%t", page.id, page.url, page.selected))
+		rows = append(rows, fmt.Sprintf("  %d,%d,%s,%t", page.id, page.windowID, page.url, page.selected))
 	}
 
 	return joinBlocks(
-		fmt.Sprintf("pages[%d]{id,url,selected}:\n%s", len(pages), strings.Join(rows, "\n")),
+		fmt.Sprintf("pages[%d]{id,window,url,selected}:\n%s", len(pages), strings.Join(rows, "\n")),
 		renderHelp([]string{
 			"Run `clawchrome-cli selectpage <id>` to switch tabs",
 			"Run `clawchrome-cli newpage <url>` to open a new tab",
