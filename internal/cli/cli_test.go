@@ -371,12 +371,60 @@ func TestMainWritesUpdateNoticeToStderr(t *testing.T) {
 	}
 }
 
+func TestStartUsesRuntimeHTTPStartBrowserTool(t *testing.T) {
+	restoreEnsureBridge := stubEnsureBridge(t, func() (int, error) {
+		return 8091, nil
+	})
+	defer restoreEnsureBridge()
+	restoreUsesHTTPTransport := stubUsesHTTPTransport(t, func() bool {
+		return true
+	})
+	defer restoreUsesHTTPTransport()
+	restoreCallTool := stubCallTool(t, func(name string, args map[string]any) (string, error) {
+		if name != "start_browser" {
+			t.Fatalf("unexpected tool %q", name)
+		}
+		if got, _ := args["url"].(string); got != "https://example.com" {
+			t.Fatalf("expected start_browser url=https://example.com, got %#v", args["url"])
+		}
+		return "", nil
+	})
+	defer restoreCallTool()
+
+	var stdout bytes.Buffer
+	exitCode := Main([]string{"start", "https://example.com"}, &stdout, &bytes.Buffer{})
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "status: ready") || !strings.Contains(stdout.String(), "port: 8091") {
+		t.Fatalf("unexpected start output: %q", stdout.String())
+	}
+}
+
 func stubCallTool(t *testing.T, fn func(name string, args map[string]any) (string, error)) func() {
 	t.Helper()
 	prev := callTool
 	callTool = fn
 	return func() {
 		callTool = prev
+	}
+}
+
+func stubEnsureBridge(t *testing.T, fn func() (int, error)) func() {
+	t.Helper()
+	prev := ensureBridge
+	ensureBridge = fn
+	return func() {
+		ensureBridge = prev
+	}
+}
+
+func stubUsesHTTPTransport(t *testing.T, fn func() bool) func() {
+	t.Helper()
+	prev := usesHTTPTransport
+	usesHTTPTransport = fn
+	return func() {
+		usesHTTPTransport = prev
 	}
 }
 

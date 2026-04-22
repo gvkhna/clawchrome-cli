@@ -94,6 +94,11 @@ func EnsureBridge() (int, error) {
 	}
 }
 
+func UsesHTTPTransport() bool {
+	cfg, err := loadTransportConfig()
+	return err == nil && cfg.mode == transportHTTP
+}
+
 func CallTool(name string, args map[string]any) (string, error) {
 	state, cfg, err := ensureSession()
 	if err != nil {

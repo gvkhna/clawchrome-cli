@@ -21,6 +21,7 @@ var (
 	ensureBridge                = client.EnsureBridge
 	getSessionSnapshotIfRunning = client.GetSessionSnapshotIfRunning
 	stopBridge                  = client.StopBridge
+	usesHTTPTransport           = client.UsesHTTPTransport
 	selfUpdate                  = func(currentVersion string, targetVersion string) (string, error) {
 		return update.SelfUpdate(context.Background(), currentVersion, targetVersion)
 	}
@@ -118,11 +119,7 @@ func runCommand(command string, args []string, full bool) (string, error) {
 	case "resize":
 		return handleResize(args)
 	case "start":
-		port, err := ensureBridge()
-		if err != nil {
-			return "", err
-		}
-		return encode(map[string]any{"status": "ready", "port": port}), nil
+		return handleStart(args)
 	case "stop":
 		return encode(map[string]any{"status": stopText(stopBridge())}), nil
 	case "version":
@@ -157,6 +154,23 @@ func renderHome() string {
 		encode(map[string]any{"browser": "no active session"}),
 		renderHelp([]string{"Run `clawchrome-cli open <url>` to start browsing"}),
 	)
+}
+
+func handleStart(args []string) (string, error) {
+	port, err := ensureBridge()
+	if err != nil {
+		return "", err
+	}
+	if usesHTTPTransport() {
+		toolArgs := map[string]any{}
+		if url := firstPositionalArg(args); url != "" {
+			toolArgs["url"] = url
+		}
+		if _, err := callTool("start_browser", toolArgs); err != nil {
+			return "", err
+		}
+	}
+	return encode(map[string]any{"status": "ready", "port": port}), nil
 }
 
 func handleOpen(args []string, full bool) (string, error) {
