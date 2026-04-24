@@ -100,6 +100,7 @@ func TestAXIValidationErrorsAreScopedAndDoNotCallBackend(t *testing.T) {
 		{"open unknown flag", []string{"open", "https://example.com", "--bogus"}, "Unexpected", "usage: clawchrome-cli open"},
 		{"snapshot unknown flag", []string{"snapshot", "--bogus"}, "Unexpected", "usage: clawchrome-cli snapshot"},
 		{"screenshot unknown flag", []string{"screenshot", "./page.png", "--bogus"}, "Unexpected", "usage: clawchrome-cli screenshot"},
+		{"screenshot uid flag rejected", []string{"screenshot", "./page.png", "--uid", "@1"}, "Unexpected", "usage: clawchrome-cli screenshot"},
 		{"click missing ref", []string{"click"}, "Missing element ref", "usage: clawchrome-cli click"},
 		{"fill missing text", []string{"fill", "@1"}, "Missing fill text", "usage: clawchrome-cli fill"},
 		{"type missing text", []string{"type"}, "Missing text", "usage: clawchrome-cli type"},
@@ -194,7 +195,6 @@ func TestAXIRefArgumentsValidateBeforeBackendCalls(t *testing.T) {
 		{"drag bad source", []string{"drag", "source", "@2"}, "usage: clawchrome-cli drag"},
 		{"drag bad target", []string{"drag", "@1", "target"}, "usage: clawchrome-cli drag"},
 		{"form upload missing sigil", []string{"form", "upload", "file-input", "./photo.jpg"}, "usage: clawchrome-cli form"},
-		{"screenshot bad uid", []string{"screenshot", "./button.png", "--uid", "button"}, "usage: clawchrome-cli screenshot"},
 	}
 
 	for _, tc := range cases {

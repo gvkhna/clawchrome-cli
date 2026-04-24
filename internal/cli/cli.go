@@ -378,9 +378,6 @@ func handleScreenshot(args []string) (string, error) {
 	}
 
 	toolArgs := map[string]any{"filePath": filePath}
-	if parsed.uid != "" {
-		toolArgs["uid"] = parsed.uid
-	}
 	if parsed.fullPage {
 		toolArgs["fullPage"] = true
 	}
@@ -1416,7 +1413,7 @@ func writeUpdateNotice(stderr io.Writer, command string) {
 func firstPositionalArg(args []string) string {
 	for i := 0; i < len(args); i++ {
 		if strings.HasPrefix(args[i], "--") {
-			if args[i] == "--uid" || args[i] == "--format" {
+			if args[i] == "--format" {
 				i++
 			}
 			continue

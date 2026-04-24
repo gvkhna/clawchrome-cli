@@ -44,21 +44,19 @@ flags:
 examples:
   clawchrome-cli open https://example.com
   clawchrome-cli open https://example.com --full`,
-	"screenshot": `usage: clawchrome-cli screenshot [path] [--uid @<uid>] [--full-page] [--format png|jpeg|webp]
+	"screenshot": `usage: clawchrome-cli screenshot [path] [--full-page] [--format png|jpeg|webp]
 Save a screenshot to a file.
 
 args:
   [path]  File path to save the screenshot. Defaults to a unique file in the system temp directory.
 
 flags:
-  --uid @<uid>    Capture a specific element instead of the full viewport
   --full-page     Capture the entire scrollable page
   --format <fmt>  Image format: png (default), jpeg, or webp
 
 examples:
   clawchrome-cli screenshot
   clawchrome-cli screenshot ./page.png
-  clawchrome-cli screenshot --uid @3
   clawchrome-cli screenshot ./full.jpeg --full-page --format jpeg`,
 	"snapshot": `usage: clawchrome-cli snapshot [--form] [--text] [--full]
 Capture the current page accessibility snapshot.
@@ -399,7 +397,6 @@ var commandOrder = []string{
 
 type screenshotArgs struct {
 	filePath string
-	uid      string
 	fullPage bool
 	format   string
 	invalid  string
@@ -407,7 +404,6 @@ type screenshotArgs struct {
 
 type ScreenshotArgs struct {
 	FilePath string
-	UID      string
 	FullPage bool
 	Format   string
 }
@@ -473,11 +469,6 @@ func ParseScreenshotArgs(args []string) ScreenshotArgs {
 	var parsed ScreenshotArgs
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--uid":
-			if i+1 < len(args) {
-				parsed.UID = parseUID(args[i+1])
-				i++
-			}
 		case "--full-page":
 			parsed.FullPage = true
 		case "--format":
@@ -498,18 +489,6 @@ func parseScreenshotArgs(args []string) screenshotArgs {
 	var parsed screenshotArgs
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--uid":
-			if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
-				parsed.invalid = "Missing value for --uid"
-				return parsed
-			}
-			uid, err := validateRefArg("screenshot", args[i+1])
-			if err != nil {
-				parsed.invalid = "Invalid element ref: expected a snapshot ref such as @1"
-				return parsed
-			}
-			parsed.uid = uid
-			i++
 		case "--full-page":
 			parsed.fullPage = true
 		case "--format":

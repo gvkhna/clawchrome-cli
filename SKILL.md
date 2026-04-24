@@ -81,7 +81,7 @@ Capture page state:
 clawchrome-cli snapshot --full
 clawchrome-cli screenshot
 clawchrome-cli screenshot ./checkout.png --full-page
-clawchrome-cli screenshot ./button.png --uid @e29
+clawchrome-cli screenshot ./checkout.jpeg --full-page --format jpeg
 ```
 
 Configure HTTP auth:

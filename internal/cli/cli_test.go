@@ -73,6 +73,9 @@ func TestGetCommandHelp(t *testing.T) {
 		if !strings.Contains(help, "screenshot [path]") || !strings.Contains(help, "system temp directory") {
 			t.Fatalf("expected screenshot help to describe optional temp path, got %q", help)
 		}
+		if strings.Contains(help, "--uid") {
+			t.Fatalf("screenshot help must not advertise element screenshots: %q", help)
+		}
 	})
 
 	t.Run("video start path is optional and defaults to temp", func(t *testing.T) {
@@ -125,14 +128,19 @@ func TestGetCommandHelp(t *testing.T) {
 }
 
 func TestParseScreenshotArgs(t *testing.T) {
-	got := parseScreenshotArgs([]string{"./shot.jpg", "--uid", "@3", "--full-page", "--format", "jpeg"})
-	if got.filePath != "./shot.jpg" || got.uid != "3" || !got.fullPage || got.format != "jpeg" {
+	got := parseScreenshotArgs([]string{"./shot.jpg", "--full-page", "--format", "jpeg"})
+	if got.filePath != "./shot.jpg" || !got.fullPage || got.format != "jpeg" {
 		t.Fatalf("unexpected parse result: %#v", got)
 	}
 
 	got = parseScreenshotArgs([]string{"--full-page", "./shot.png"})
 	if got.filePath != "./shot.png" {
 		t.Fatalf("expected filePath to be discovered from positional arg, got %#v", got)
+	}
+
+	got = parseScreenshotArgs([]string{"./shot.png", "--uid", "@3"})
+	if got.invalid != "Unexpected flag: --uid" {
+		t.Fatalf("expected --uid to be rejected, got %#v", got)
 	}
 }
 

@@ -99,7 +99,7 @@ These are the normal-mode CDP MCP APIs we intend to support.
 - `[-] press_key` - Press a key or key combination
 - `[-] resize_page` - Resize the selected page window
 - `[-] select_page` - Select a page for future tool calls
-- `[-] take_screenshot` - Take a page or element screenshot
+- `[-] take_screenshot` - Take a viewport or full-page screenshot
 - `[-] take_snapshot` - Take a text accessibility snapshot
 - `[-] type_text` - Type text into a previously focused input
 - `[-] upload_file` - Upload a file through a provided element
