@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -283,6 +284,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
 		t.Setenv("CLAWCHROME_CLI_HTTP_URL", "http://127.0.0.1:9")
 		t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret")
+		writeAXIHTTPSession(t, "http://127.0.0.1:9")
 
 		code, stdout, stderr := runMainForAXITest([]string{"pages"})
 		if code != 1 {
@@ -298,7 +300,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		assertQuietStderr(t, stderr)
 	})
 
-	t.Run("health auth failure is not reported as generic reachability", func(t *testing.T) {
+	t.Run("start health auth failure is not reported as generic reachability", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
 		t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "bad-token")
@@ -313,7 +315,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		defer server.Close()
 		t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
 
-		code, stdout, stderr := runMainForAXITest([]string{"pages"})
+		code, stdout, stderr := runMainForAXITest([]string{"start"})
 		if code != 1 {
 			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", code, stdout)
 		}
@@ -330,8 +332,6 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
-			case "/health":
-				_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 			case "/call":
 				w.WriteHeader(http.StatusForbidden)
 				_ = json.NewEncoder(w).Encode(map[string]any{"error": "forbidden"})
@@ -341,6 +341,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		}))
 		defer server.Close()
 		t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+		writeAXIHTTPSession(t, server.URL)
 
 		code, stdout, stderr := runMainForAXITest([]string{"pages"})
 		if code != 1 {
@@ -359,8 +360,6 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
-			case "/health":
-				_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 			case "/call":
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(map[string]any{"error": "internal failure"})
@@ -370,6 +369,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		}))
 		defer server.Close()
 		t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+		writeAXIHTTPSession(t, server.URL)
 
 		code, stdout, stderr := runMainForAXITest([]string{"pages"})
 		if code != 1 {
@@ -384,7 +384,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		assertQuietStderr(t, stderr)
 	})
 
-	t.Run("health rate limit is translated with retry context", func(t *testing.T) {
+	t.Run("start health rate limit is translated with retry context", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
 		t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret")
@@ -400,7 +400,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		defer server.Close()
 		t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
 
-		code, stdout, stderr := runMainForAXITest([]string{"pages"})
+		code, stdout, stderr := runMainForAXITest([]string{"start"})
 		if code != 1 {
 			t.Fatalf("expected operation failure exit code 1, got %d; output:\n%s", code, stdout)
 		}
@@ -424,8 +424,6 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
-			case "/health":
-				_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 			case "/call":
 				w.Header().Set("Retry-After", "10")
 				w.WriteHeader(http.StatusTooManyRequests)
@@ -436,6 +434,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		}))
 		defer server.Close()
 		t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+		writeAXIHTTPSession(t, server.URL)
 
 		code, stdout, stderr := runMainForAXITest([]string{"pages"})
 		if code != 1 {
@@ -461,8 +460,6 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
-			case "/health":
-				_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 			case "/call":
 				w.Header().Set("Retry-After", "30")
 				w.WriteHeader(http.StatusServiceUnavailable)
@@ -473,6 +470,7 @@ func TestAXIHTTPTransportSetupErrorsAreActionable(t *testing.T) {
 		}))
 		defer server.Close()
 		t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+		writeAXIHTTPSession(t, server.URL)
 
 		code, stdout, stderr := runMainForAXITest([]string{"pages"})
 		if code != 1 {
@@ -499,8 +497,6 @@ func TestAXIRuntimeRefNotFoundErrorsAreTranslated(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/health":
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 		case "/call":
 			w.WriteHeader(http.StatusInternalServerError)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": "AT-SPI object uid=missing not found in runtime tree"})
@@ -510,6 +506,7 @@ func TestAXIRuntimeRefNotFoundErrorsAreTranslated(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+	writeAXIHTTPSession(t, server.URL)
 
 	code, stdout, stderr := runMainForAXITest([]string{"click", "@missing"})
 	if code != 1 {
@@ -528,6 +525,31 @@ func runMainForAXITest(args []string) (int, string, string) {
 	var stdout, stderr bytes.Buffer
 	exitCode := Main(args, &stdout, &stderr)
 	return exitCode, stdout.String(), stderr.String()
+}
+
+func writeAXIHTTPSession(t *testing.T, baseURL string) {
+	t.Helper()
+
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
+		t.Fatal("HOME is required for HTTP session fixture")
+	}
+	dir := filepath.Join(home, ".clawchrome-cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create CLI state dir: %v", err)
+	}
+	raw, err := json.Marshal(map[string]any{
+		"session_id": "axi-test-session",
+		"transport":  "http",
+		"base_url":   strings.TrimRight(baseURL, "/"),
+		"port":       0,
+	})
+	if err != nil {
+		t.Fatalf("marshal CLI session fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "session.json"), raw, 0o644); err != nil {
+		t.Fatalf("write CLI session fixture: %v", err)
+	}
 }
 
 func forbidSideEffects(t *testing.T) func() {

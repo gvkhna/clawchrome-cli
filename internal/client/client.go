@@ -232,7 +232,7 @@ func CallRuntimeHTTPTool(name string, args map[string]any) (RuntimeHTTPToolRespo
 			"Unset CLAWCHROME_CLI_TRANSPORT or set it to http",
 		)
 	}
-	state, err := ensureHTTPSession(cfg)
+	state, err := requireHTTPSession(cfg)
 	if err != nil {
 		return RuntimeHTTPToolResponse{}, err
 	}
@@ -259,10 +259,6 @@ func CallRuntimeHTTPTool(name string, args map[string]any) (RuntimeHTTPToolRespo
 func GetSessionSnapshotIfRunning() (string, bool) {
 	state, cfg, ok := currentSession()
 	if !ok {
-		return "", false
-	}
-	healthy, _ := checkBridgeHealth(state, cfg)
-	if !healthy {
 		return "", false
 	}
 	payload, err := postJSON(state, cfg, defaultRemoteCallPath, map[string]any{
@@ -564,7 +560,7 @@ func ensureSession() (sessionState, transportConfig, error) {
 
 	switch cfg.mode {
 	case transportHTTP:
-		state, err := ensureHTTPSession(cfg)
+		state, err := requireHTTPSession(cfg)
 		return state, cfg, err
 	case transportStdio:
 		state, err := ensureStdioSession()
@@ -594,35 +590,18 @@ func currentSession() (sessionState, transportConfig, bool) {
 }
 
 func ensureHTTPSession(cfg transportConfig) (sessionState, error) {
-	if cfg.baseURL == "" {
-		return sessionState{}, WrapError(
-			"Missing resolved target API URL for http transport",
-			ErrValidation,
-			"Set CLAWCHROME_CLI_HTTP_URL only if overriding the default runtime API target",
-		)
-	}
-	if cfg.bearerToken == "" {
-		return sessionState{}, WrapError(
-			"Missing auth token for http transport",
-			ErrValidation,
-			"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN or run `clawchrome-cli start --token <token>`",
-		)
+	if err := validateHTTPSessionConfig(cfg); err != nil {
+		return sessionState{}, err
 	}
 
-	state, ok := readState()
-	if ok && state.Transport == transportHTTP && state.BaseURL == cfg.baseURL && state.SessionID != "" {
+	if state, ok := readHTTPSessionForConfig(cfg); ok {
 		healthy, err := checkBridgeHealth(state, cfg)
 		if err == nil && healthy {
 			return state, nil
 		}
 	}
 
-	state = sessionState{
-		SessionID: generateSessionID(),
-		Transport: transportHTTP,
-		BaseURL:   cfg.baseURL,
-		Port:      parsePortFromURL(cfg.baseURL),
-	}
+	state := newHTTPSessionState(cfg)
 	healthy, err := checkBridgeHealth(state, cfg)
 	if err != nil || !healthy {
 		if err != nil {
@@ -638,6 +617,56 @@ func ensureHTTPSession(cfg transportConfig) (sessionState, error) {
 		return sessionState{}, err
 	}
 	return state, nil
+}
+
+func requireHTTPSession(cfg transportConfig) (sessionState, error) {
+	if err := validateHTTPSessionConfig(cfg); err != nil {
+		return sessionState{}, err
+	}
+	if state, ok := readHTTPSessionForConfig(cfg); ok {
+		return state, nil
+	}
+	return sessionState{}, WrapError(
+		"No active HTTP session. Run `clawchrome-cli start` before using browser commands.",
+		ErrBridgeNotReady,
+		"Run `clawchrome-cli start`",
+		"Check CLAWCHROME_CLI_HTTP_URL matches the runtime target used with start",
+	)
+}
+
+func validateHTTPSessionConfig(cfg transportConfig) error {
+	if cfg.baseURL == "" {
+		return WrapError(
+			"Missing resolved target API URL for http transport",
+			ErrValidation,
+			"Set CLAWCHROME_CLI_HTTP_URL only if overriding the default runtime API target",
+		)
+	}
+	if cfg.bearerToken == "" {
+		return WrapError(
+			"Missing auth token for http transport",
+			ErrValidation,
+			"Set CLAWCHROME_CLI_HTTP_BEARER_TOKEN or run `clawchrome-cli start --token <token>`",
+		)
+	}
+	return nil
+}
+
+func readHTTPSessionForConfig(cfg transportConfig) (sessionState, bool) {
+	state, ok := readState()
+	if !ok || state.Transport != transportHTTP || state.BaseURL != cfg.baseURL || state.SessionID == "" {
+		return sessionState{}, false
+	}
+	return state, true
+}
+
+func newHTTPSessionState(cfg transportConfig) sessionState {
+	return sessionState{
+		SessionID: generateSessionID(),
+		Transport: transportHTTP,
+		BaseURL:   cfg.baseURL,
+		Port:      parsePortFromURL(cfg.baseURL),
+	}
 }
 
 func ensureStdioSession() (sessionState, error) {

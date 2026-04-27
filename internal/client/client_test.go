@@ -18,12 +18,14 @@ func TestHTTPTransportUsesBearerAndSessionHeaders(t *testing.T) {
 
 	var healthSession string
 	var callSession string
+	var healthCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
 			t.Fatalf("unexpected authorization header: %q", got)
 		}
 		switch r.URL.Path {
 		case "/health":
+			healthCalls++
 			healthSession = r.Header.Get(sessionHeaderName)
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 		case "/call":
@@ -50,6 +52,9 @@ func TestHTTPTransportUsesBearerAndSessionHeaders(t *testing.T) {
 	}
 	if result != "ok" {
 		t.Fatalf("unexpected result: %q", result)
+	}
+	if healthCalls != 1 {
+		t.Fatalf("expected only start to probe health, got %d health calls", healthCalls)
 	}
 	if healthSession == "" || callSession == "" {
 		t.Fatalf("expected session headers to be sent")
@@ -78,13 +83,12 @@ func TestCallRuntimeHTTPToolUsesDedicatedToolEndpoint(t *testing.T) {
 
 	var toolSession string
 	var gotBody map[string]any
+	sessionID := "existing-session"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
 			t.Fatalf("unexpected authorization header: %q", got)
 		}
 		switch r.URL.Path {
-		case "/health":
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 		case "/api/tools/browser_mouse_move_xy":
 			toolSession = r.Header.Get(sessionHeaderName)
 			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
@@ -103,6 +107,14 @@ func TestCallRuntimeHTTPToolUsesDedicatedToolEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+	if err := writeState(sessionState{
+		SessionID: sessionID,
+		Transport: transportHTTP,
+		BaseURL:   server.URL,
+		Port:      parsePortFromURL(server.URL),
+	}); err != nil {
+		t.Fatalf("writeState failed: %v", err)
+	}
 
 	result, err := CallRuntimeHTTPTool("browser_mouse_move_xy", map[string]any{"x": 10, "y": 20})
 	if err != nil {
@@ -111,11 +123,38 @@ func TestCallRuntimeHTTPToolUsesDedicatedToolEndpoint(t *testing.T) {
 	if result.Action != "mouse_move_xy" || result.Backend != "runtime-core" || result.Message != "mouse moved" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	if toolSession == "" {
-		t.Fatalf("expected session header on tool request")
+	if toolSession != sessionID {
+		t.Fatalf("unexpected session header on tool request: %q", toolSession)
 	}
 	if gotBody["x"] != float64(10) || gotBody["y"] != float64(20) {
 		t.Fatalf("unexpected tool body: %#v", gotBody)
+	}
+}
+
+func TestHTTPTransportRequiresStartForToolCalls(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret-token")
+
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		t.Fatalf("tool call should require an existing session before contacting %s", r.URL.Path)
+	}))
+	defer server.Close()
+	t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+
+	_, err := CallTool("take_snapshot", map[string]any{})
+	if err == nil {
+		t.Fatalf("expected missing session error")
+	}
+	cdpErr, ok := err.(*CdpError)
+	if !ok || cdpErr.Code != ErrBridgeNotReady || !strings.Contains(cdpErr.Message, "clawchrome-cli start") {
+		t.Fatalf("unexpected error: %#v", err)
+	}
+	if called {
+		t.Fatalf("unexpected HTTP request without session")
 	}
 }
 
@@ -150,6 +189,7 @@ func TestHTTPTransportUsesSavedAuthConfig(t *testing.T) {
 
 	var gotUserAgent string
 	var gotAgentName string
+	sessionID := "saved-auth-session"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer saved-token" {
 			t.Fatalf("unexpected authorization header: %q", got)
@@ -157,9 +197,10 @@ func TestHTTPTransportUsesSavedAuthConfig(t *testing.T) {
 		gotUserAgent = r.Header.Get("User-Agent")
 		gotAgentName = r.Header.Get("X-Clawchrome-Agent-Name")
 		switch r.URL.Path {
-		case "/health":
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 		case "/call":
+			if got := r.Header.Get(sessionHeaderName); got != sessionID {
+				t.Fatalf("unexpected session header: %q", got)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": "ok"})
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -167,6 +208,14 @@ func TestHTTPTransportUsesSavedAuthConfig(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+	if err := writeState(sessionState{
+		SessionID: sessionID,
+		Transport: transportHTTP,
+		BaseURL:   server.URL,
+		Port:      parsePortFromURL(server.URL),
+	}); err != nil {
+		t.Fatalf("writeState failed: %v", err)
+	}
 
 	result, err := CallTool("list_pages", map[string]any{})
 	if err != nil {
@@ -194,6 +243,7 @@ func TestHTTPTransportEnvTokenOverridesSavedAuthConfig(t *testing.T) {
 	}
 	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "env-token")
 
+	sessionID := "env-auth-session"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer env-token" {
 			t.Fatalf("unexpected authorization header: %q", got)
@@ -202,9 +252,10 @@ func TestHTTPTransportEnvTokenOverridesSavedAuthConfig(t *testing.T) {
 			t.Fatalf("expected saved agent name header, got %q", got)
 		}
 		switch r.URL.Path {
-		case "/health":
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 		case "/call":
+			if got := r.Header.Get(sessionHeaderName); got != sessionID {
+				t.Fatalf("unexpected session header: %q", got)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": "ok"})
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -212,6 +263,14 @@ func TestHTTPTransportEnvTokenOverridesSavedAuthConfig(t *testing.T) {
 	}))
 	defer server.Close()
 	t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+	if err := writeState(sessionState{
+		SessionID: sessionID,
+		Transport: transportHTTP,
+		BaseURL:   server.URL,
+		Port:      parsePortFromURL(server.URL),
+	}); err != nil {
+		t.Fatalf("writeState failed: %v", err)
+	}
 
 	if _, err := CallTool("list_pages", map[string]any{}); err != nil {
 		t.Fatalf("CallTool failed: %v", err)
@@ -293,6 +352,81 @@ func TestStopBridgeClearsHTTPState(t *testing.T) {
 	}
 }
 
+func TestEnsureBridgeReusesHealthyHTTPSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret-token")
+
+	sessionID := "existing-session"
+	var healthSession string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		healthSession = r.Header.Get(sessionHeaderName)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
+	}))
+	defer server.Close()
+	t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+	if err := writeState(sessionState{
+		SessionID: sessionID,
+		Transport: transportHTTP,
+		BaseURL:   server.URL,
+		Port:      parsePortFromURL(server.URL),
+	}); err != nil {
+		t.Fatalf("writeState failed: %v", err)
+	}
+
+	if _, err := EnsureBridge(); err != nil {
+		t.Fatalf("EnsureBridge failed: %v", err)
+	}
+	if healthSession != sessionID {
+		t.Fatalf("expected health check to use existing session, got %q", healthSession)
+	}
+	state, ok := readState()
+	if !ok || state.SessionID != sessionID {
+		t.Fatalf("expected existing state to be kept, got %#v ok=%t", state, ok)
+	}
+}
+
+func TestHTTPTransportCallFailureDoesNotReplaceSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLAWCHROME_CLI_TRANSPORT", "http")
+	t.Setenv("CLAWCHROME_CLI_HTTP_BEARER_TOKEN", "secret-token")
+
+	sessionID := "stable-session"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/call" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get(sessionHeaderName); got != sessionID {
+			t.Fatalf("unexpected session header: %q", got)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "broken"})
+	}))
+	defer server.Close()
+	t.Setenv("CLAWCHROME_CLI_HTTP_URL", server.URL)
+	if err := writeState(sessionState{
+		SessionID: sessionID,
+		Transport: transportHTTP,
+		BaseURL:   server.URL,
+		Port:      parsePortFromURL(server.URL),
+	}); err != nil {
+		t.Fatalf("writeState failed: %v", err)
+	}
+
+	if _, err := CallTool("list_pages", map[string]any{}); err == nil {
+		t.Fatalf("expected call failure")
+	}
+	state, ok := readState()
+	if !ok || state.SessionID != sessionID {
+		t.Fatalf("expected failed call to keep session state, got %#v ok=%t", state, ok)
+	}
+}
+
 func TestGetSessionSnapshotIfRunningUsesExistingHTTPSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -308,8 +442,6 @@ func TestGetSessionSnapshotIfRunningUsesExistingHTTPSession(t *testing.T) {
 			t.Fatalf("unexpected session header: %q", got)
 		}
 		switch r.URL.Path {
-		case "/health":
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok"})
 		case "/call":
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": "snapshot"})
 		default:
